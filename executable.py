@@ -21,13 +21,8 @@ class ElfExecutable(_Executable):
     def __init__(self, filename):
         self.filename = filename
         self.elfreader = ELFFile(open(filename))
-        self.ida = idalink.IDALink(filename)
+        self.ida = idalink.IDALink(filename, "idal64" if self.is_64_bit() else "idal")
+        self.get_section_by_name = self.elfreader.get_section_by_name
 
-    # get_section_by_name
-    # gets the memaddress of the start of the section by the given name or None
-
-    def get_section_by_name(self, name):
-        for section in self.elfreadr.iter_sections():
-            if section.name == name:
-                return section
-        return None
+    def is_64_bit(self):
+        return self.elfreader.header.e_ident.EI_CLASS == 'ELFCLASS64'

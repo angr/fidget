@@ -8,3 +8,5 @@ against any exploit leveraging a buffer overflow or format string
 vulnerability, which is most of them.
 
 It is not done.
+
+You'll want to fix up the symlinks to idal and idal64.
