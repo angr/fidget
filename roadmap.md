@@ -3,8 +3,8 @@ This should be the program's processing checklist:
 - [x] Load file via idalink, pyelftools - verify it's an ELF (for now)
 - [x] Find the .text section - use pyelftools
 - [x] Find all the functions in .text - use idalink
-- [ ] Figure out what kind of stack frame is used in each function
-- [ ] Find all references to stack memory (ebp-stuff, esp+stuff on calling conventions w/ args in registers)
+- [X] Figure out what kind of stack frame is used in each function
+- [X] Find all references to stack memory (ebp-stuff, esp+stuff on calling conventions w/ args in registers)
 - [ ] Figure out which references are actually offsets into variables - i.e. find variables
 - [ ] Resize stack frame - add CONST_OFFSET + num_vars * CONST_SPACING bytes of size
 - [ ] Relocate variables - move each up by CONST_OFFSET + num_vars_below * CONST_SPACING
@@ -37,7 +37,7 @@ The idaPy docs suuuuuck (protip: read the source), so here's my notes on it:
     Returns the text that is the disassembly of the opcode at the given address. Ex: `mov   rbp, rsp`
 
 - `idc.GetMnem(memaddr)`
-    Returns the name of the opcode used at the given address. Ex: `mov`
+    Returns the name of the opcode used at the given address. Ex: `"mov"`
 
 - `idc.GetOpnd(memaddr, n)`
     Returns the nth operand of the opcode at the given address as a string, or an empty string if there are fewer 
@@ -45,14 +45,7 @@ The idaPy docs suuuuuck (protip: read the source), so here's my notes on it:
 
 - `idc.GetOpType(memaddr, n)`
     Returns a number representing the type of the operand.
-    - 0: None
-    - 1: Opcode
-    - 2: Data address
-    - 3: [reg+reg*const]
-    - 4: [reg+const]
-    - 5: Number
-    - 6: 
-    - 7: Code address
+    Constants defined in idaapi.py, ~line 50,000
 
 - `idc.GetOperandValue(memaddr, n)`
     Returns the numerical value of the nth operand
@@ -62,6 +55,18 @@ The idaPy docs suuuuuck (protip: read the source), so here's my notes on it:
 
 - `idc.here()`
     Returns the memaddress at which the cursor is currently situated.
+
+- `idc.Jump(memaddr)`
+    Moves the user's cursor to the specified address
+
+- `idc.NextHead(memaddr)`
+    Returns the memaddr of the first data or instruction starting after the given address
+
+- `idc.GetSpd(memaddr)`
+    Returns the difference between esp and ebp at this point in the function
+
+- `idautils.DecodeInstruction(memaddr)`
+    Returns an object of type `idaapi.insn_t` describing the instruction at the given address
 
 - `idaapi.insn_t`
     A class describing an instruction. Important properties:
@@ -75,7 +80,36 @@ The idaPy docs suuuuuck (protip: read the source), so here's my notes on it:
 - `idaapi.op_t`
     A class describing an instruction's operand. Important properties:
     - `type`: The type from idc.GetOpType
+    - `reg`: The ID number of the register involved in the operand
+    - `dtyp`: 
+    - `has_reg()`: Returns if the opcode has a register in it
+    - `is_reg()`: Returns if the opcode is nothing but a register, probably
+    - `value`: The numerical value of an operand-- does not work for dereference offsets
 
+- `idc.OpOffEx`
+    TODO: Examine
+
+
+IDA's identification numbers, until I find a better way:
+
+x86/amd64: (r** == e** = **)
+- 0: ax || nothing-- be careful!
+- 1: cx
+- 2: dx
+- 3: bx
+- 4: sp
+- 5: bp
+- 6: si
+- 7: di
+- 8: r8
+- 9: r9
+- 10: r10
+- 11: r11
+- 12: r12
+- 16: al
+- 17: cl
+- 31: ss (???)
+- 23: bh
 
 
 Different kinds of stack frame headers I've found:
