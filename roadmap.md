@@ -85,9 +85,10 @@ The idaPy docs suuuuuck (protip: read the source), so here's my notes on it:
     - `has_reg()`: Returns if the opcode has a register in it
     - `is_reg()`: Returns if the opcode is nothing but a register, probably
     - `value`: The numerical value of an operand-- does not work for dereference offsets
+    - `n`: Which number operand this is, i.e. 0 for the first, 1 for the second...
 
-- `idc.OpOffEx`
-    TODO: Examine
+- `idc.OpHex(memaddr, n)`
+    Convert the nth operand of the instruction at memaddr to be displayed in hexadecimal
 
 
 IDA's identification numbers, until I find a better way:

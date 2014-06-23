@@ -5,6 +5,7 @@ import executable
 
 def main(filename):
     binrepr = executable.Executable(filename)
+    binrepr.verbose = 1
     textsec = binrepr.get_section_by_name('.text')
     textrange = (textsec.header.sh_addr, textsec.header.sh_addr + textsec.header.sh_size)
     textfuncs = binrepr.ida.idautils.Functions(*textrange)
@@ -29,8 +30,10 @@ def parse_function(binrepr, funcaddr):
     use_accesses = [] # the accesses that actually constitute local vars
     addresses = set() # the stack offsets of all the accessed local vars
     for ins in binrepr.iterate_instructions(funcaddr):
-       # if funcaddr == 0x8049120:
-       #     binrepr.verbose = True
+      #  if funcaddr == 0x2000:
+      #      binrepr.verbose = 1
+      #  else:
+      #      binrepr.verbose = 0
         typ = binrepr.identify_instr(ins)
         if typ[0] == '': continue
         elif typ[0] == 'STACK_TYPE_BP':
@@ -50,7 +53,7 @@ def parse_function(binrepr, funcaddr):
                 return
             offset = binrepr.ida.idc.GetSpd(ins.ea) + typ[1] + size + size_offset if size_offset is not None else 0
             if offset < 0:
-                print '\t*** Warning (%x): Function appears to be accessing above its stack frame, discarding instruction' % ins.ea
+                if binrepr.verbose > 0: print '\t*** Warning (%x): Function appears to be accessing above its stack frame, discarding instruction' % ins.ea
                 continue
             # Do not filter out arg accesses here because those will need to be adjusted
             sp_accesses.append((ins, offset))
@@ -72,7 +75,7 @@ def parse_function(binrepr, funcaddr):
         #arg_accesses = filter(lambda x: x[1] > 0, bp_accesses)
         addresses = set(map(lambda x: x[1], bp_accesses))
         use_accesses = [x for x in bp_accesses]
-
+    
 # Find the lowest sp-access that isn't an argument to the next function
 # By starting at accesses to [esp] and stepping up a word at a time
 # When it misses a step, that's when we're onto the stack vars
@@ -81,7 +84,9 @@ def parse_function(binrepr, funcaddr):
     wordsize = executable.word_size[binrepr.native_dtyp]
     sp_iter = iter(sorted(sp_accesses, key=lambda x: x[1]))
     last = -wordsize          # first one should be 0, so this is the one "before it"
-    still_args = True
+    still_args = binrepr.is_convention_stack_args()
+        # short-circuit this if the calling convention
+        # doesn't pass arguments on the stack
     for sp_access in sp_iter:
         #print 'Looking at %x accessing %d' % (sp_access[0].ea, sp_access[1])
         if still_args:
@@ -96,12 +101,20 @@ def parse_function(binrepr, funcaddr):
             addresses.add(sp_access[1])
             use_accesses.append(sp_access)
 
-    print '\tFunction has a %s-based stack frame of %d bytes.\n\t%d access%s to %d different address%s %s made.\n\tThere is %s deallocation.' % \
-        ('bp' if bp_based else 'sp', size, 
-        len(use_accesses), '' if len(use_accesses) == 1 else 'es',
-        len(addresses), '' if len(addresses) == 1 else 'es',
-        'is' if len(use_accesses) == 1 else 'are',
-        'an automatic' if len(dealloc_ops) == 0 else 'a manual')
+    if len(use_accesses) > 0:
+        if binrepr.verbose > 0: print '\tFunction has a %s-based stack frame of %d bytes.\n\t%d access%s to %d address%s %s made.\n\tThere is %s deallocation.' % \
+            ('bp' if bp_based else 'sp', size, 
+            len(use_accesses), '' if len(use_accesses) == 1 else 'es',
+            len(addresses), '' if len(addresses) == 1 else 'es',
+            'is' if len(use_accesses) == 1 else 'are',
+            'an automatic' if len(dealloc_ops) == 0 else 'a manual')
+
+        if binrepr.verbose > 1:
+            for access in use_accesses:
+                print '%8x:       %s' % (access[0].ea, binrepr.ida.idc.GetDisasm(access[0].ea))
+    else:
+        print '\tFunction has a %d-byte stack frame, but doesn\'t use it for local vars' % size
+        return
 
 
 if __name__ == '__main__':
