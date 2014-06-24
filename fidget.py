@@ -1,11 +1,12 @@
 #!/usr/bin/python
 
-import sys
+import sys, os
 import executable
 
-def main(filename):
+def main(filename, options):
+    print 'Loading %s...' % filename
     binrepr = executable.Executable(filename)
-    binrepr.verbose = 1
+    binrepr.verbose = options["verbose"]
     textsec = binrepr.get_section_by_name('.text')
     textrange = (textsec.header.sh_addr, textsec.header.sh_addr + textsec.header.sh_size)
     textfuncs = binrepr.ida.idautils.Functions(*textrange)
@@ -30,10 +31,6 @@ def parse_function(binrepr, funcaddr):
     use_accesses = [] # the accesses that actually constitute local vars
     addresses = set() # the stack offsets of all the accessed local vars
     for ins in binrepr.iterate_instructions(funcaddr):
-      #  if funcaddr == 0x2000:
-      #      binrepr.verbose = 1
-      #  else:
-      #      binrepr.verbose = 0
         typ = binrepr.identify_instr(ins)
         if typ[0] == '': continue
         elif typ[0] == 'STACK_TYPE_BP':
@@ -49,27 +46,27 @@ def parse_function(binrepr, funcaddr):
                 return
         elif typ[0] == 'STACK_SP_ACCESS':
             if size == 0:
-                print '\tFunction does not appear to have a stack frame.'
+                if binrepr.verbose > 0: print '\tFunction does not appear to have a stack frame.'
                 return
             offset = binrepr.ida.idc.GetSpd(ins.ea) + typ[1] + size + size_offset if size_offset is not None else 0
             if offset < 0:
                 if binrepr.verbose > 0: print '\t*** Warning (%x): Function appears to be accessing above its stack frame, discarding instruction' % ins.ea
                 continue
             # Do not filter out arg accesses here because those will need to be adjusted
-            sp_accesses.append((ins, offset))
+            sp_accesses.append([ins, offset, typ[2]])
         elif typ[0] == 'STACK_BP_ACCESS':
             if size == 0:
-                print '\tFunction does not appear to have a stack frame.'
+                if binrepr.verbose > 0: print '\tFunction does not appear to have a stack frame.'
                 return
             if not bp_based:
                 continue        # silently ignore bp access in sp frame
             if typ[1] > 0:
                 continue        # this is one of the function's arguments
-            bp_accesses.append((ins, typ[1] + size))
+            bp_accesses.append([ins, typ[1] + size, typ[2]])
         else:
             print '\t*** CRITICAL: You forgot to update parse_function(), jerkface!'
     if alloc_op is None:
-        print '\tFunction does not appear to have a stack frame.'
+        if binrepr.verbose > 0: print '\tFunction does not appear to have a stack frame.'
         return
     if bp_based:
         #arg_accesses = filter(lambda x: x[1] > 0, bp_accesses)
@@ -88,16 +85,13 @@ def parse_function(binrepr, funcaddr):
         # short-circuit this if the calling convention
         # doesn't pass arguments on the stack
     for sp_access in sp_iter:
-        #print 'Looking at %x accessing %d' % (sp_access[0].ea, sp_access[1])
         if still_args:
-            #print 'last:',last
             if last != sp_access[1] and sp_access[1] - last != wordsize:
                 still_args = False
             last = sp_access[1]
         if not still_args:
             if sp_access[1] > size:
                 break                 # Don't count this or anything past it, it's args  
-            #print 'Added to list'
             addresses.add(sp_access[1])
             use_accesses.append(sp_access)
 
@@ -111,14 +105,137 @@ def parse_function(binrepr, funcaddr):
 
         if binrepr.verbose > 1:
             for access in use_accesses:
-                print '%8x:       %s' % (access[0].ea, binrepr.ida.idc.GetDisasm(access[0].ea))
+                print '%0.8x: (%3d)      %s' % (access[0].ea, access[1], binrepr.ida.idc.GetDisasm(access[0].ea))
     else:
-        print '\tFunction has a %d-byte stack frame, but doesn\'t use it for local vars' % size
+        if binrepr.verbose > 0: print '\tFunction has a %d-byte stack frame, but doesn\'t use it for local vars' % size
         return
 
+    # MOVING ON
+    # We now have all the addresses we care about
+    # let's organize them into variables
+    
+    vars = VarList(binrepr, size)
+    vars.add_vars(addresses)
+    vars.add_accesses(use_accesses)
+    vars.collapse()
+
+
+
+class VarList():
+    def __init__(self, binrepr, stack_size):
+        self.vars = []
+        self.binrepr = binrepr
+        self.stack_size = stack_size
+
+    def add_vars(self, addrlist):
+        for addr in sorted(addrlist):
+            self.add_var(addr)
+
+    def add_var(self, addr):
+        assert addr >= 0 and addr < self.stack_size
+        if len(self.vars) == 0:
+            self.vars = [{"addr": addr, "size": self.stack_size - addr, "accesses": [], "flags": 0}]
+        elif addr < self.vars[0]["addr"]:
+            self.vars = [{"addr": addr, "size": self.vars[0]["addr"] - addr, "accesses": [], "flags": 0}] + self.vars
+        elif addr > self.vars[-1]["addr"]:
+            self.vars[-1]["size"] = addr - self.vars[-1]["addr"]
+            self.vars.append({"addr": addr, "size": self.stack_size - addr, "accesses": [], "flags": 0})
+        else:       # TODO: Optimize with binary search
+            for i, item in enumerate(self.vars):
+                if i == 0: continue
+                if addr < item["addr"]:
+                    self.vars[i-1]["size"] = addr - self.vars[i-1]["addr"]
+                    self.vars = self.vars[:i] + [{"addr": addr, "size": item["addr"] - addr, "accesses": [], flags: 0}] + self.vars[i:]
+                    break
+
+    def add_accesses(self, accesslist):
+        for access in accesslist:
+            self.add_access(access)
+
+    def add_access(self, access):  # access is a list [ins, addr, opn]
+        var = self.get_var(access[1])   # it'll become [ins, offset, opn]
+        if var is None:
+            print '\t*** CRITICAL (%x): Access has not been documented??' % access[0].ea
+            return
+        access[1] = 0
+        var["accesses"].append(access)
+        var["flags"] |= self.binrepr.get_access_flags(access[0], access[2])
+
+    def get_var(self, addr): # TODO: Optimize with binary search
+        for var in self.vars:
+            if var["addr"] == addr:
+                return var
+        return None
+
+    def collapse(self):
+        i = 0               # old fashioned loop because we're removing items
+        while i < len(self.vars) - 1:
+            i += 1
+            var = self.vars[i]
+            if var["addr"] % executable.word_size[self.binrepr.native_dtyp] != 0:
+                self.merge_up(i)
+                i -= 1
+            elif var["flags"] != 3:
+                self.merge_up(i)
+                i -= 1
+
+    def merge_up(self, i):
+        child = self.vars.pop(i)
+        parent = self.vars[i-1]
+        for access in child["accesses"]:
+            access[1] += parent["size"] # adjust offset
+            parent["accesses"].append(access)
+        parent["size"] += child["size"]
+        if self.binrepr.verbose > 1:
+            print 'Merged %d into %d' % (child["addr"], parent["addr"])
+
+    def __str__(self):
+        return '\n'.join(str(x) for x in self.vars)
+
+    def __repr__(self):
+        return str(self)
+
+def addopt(options, option):
+    if option in ('v', 'verbose'):
+        options["verbose"] += 1
+    elif option in ('q', 'quiet'):
+        options["verbose"] -= 1
+    elif option in ('h', 'help'):
+        usage()
+        os.exit(0)
+    elif option in ('safe'):
+        options['safe'] = True
+    else:
+        print 'Bad argument: %s' % option
+        os.exit(1)
+
+def usage():
+    print """Fidget: The Binary Tweaker
+
+Usage: %s [options] filename
+
+Options:
+    -h, --help              View this usage information and exit
+    -v, --verbose           More output
+    -q, --quiet             Less output
+    --safe                  Make conservative modifications
+""" % sys.argv[0]
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         usage()
     else:
-        main(sys.argv[1])
+        options = {"verbose": 0, "safe": False}
+        filenames = []
+        for arg in sys.argv[1:]:
+            if arg.startswith('--'):
+                addopt(options, arg[:2])
+            elif arg.startswith('-'):
+                for flag in arg[1:]: addopt(options, flag)
+            else:
+                filenames.append(arg)
+        if len(filenames) == 0:
+            print 'You must specify a file to operate on!'
+            os.exit(1)
+        for filename in filenames:
+            main(filename, options)

@@ -72,32 +72,32 @@ class _Executable():
                 return dtype
         return None # ..?
 
-    def identify_instr(self, ins): #only works on x86 right now, maybe amd64
+    def identify_instr(self, ins):
         if self.verbose > 2:
             print '%8x:       %s' % (ins.ea, self.ida.idc.GetDisasm(ins.ea))
         s = [self.ida.idc.GetMnem(ins.ea)] + map(lambda x: self.ida.idc.GetOpnd(ins.ea, x), range(6))
         if self.identify_bp_assignment(s):
             return ('STACK_TYPE_BP', 0)
         if self.identify_sp_assignment(s):
-            return ('STACK_FRAME_ALLOC', ins.Op2.value)
-        if s[0] == 'add' and (s[1] == 'esp' or s[1] == 'rsp'):
-            return ('STACK_FRAME_DEALLOC', ins.Op2.value)
+            return ('STACK_FRAME_ALLOC', ins.Op2.value if self.processor < 2 else ins.Op3.value)
+        if self.identify_sp_deassignment(s):
+            return ('STACK_FRAME_DEALLOC', ins.Op2.value if self.processor < 2 else ins.Op3.value)
         for opn in ins.Operands:
             if opn.type == 0: break
             if opn.type == 3 and opn.has_reg(self.ida.idautils.procregs.sp):
                 if not self.sanity_check(ins.ea, opn):
                     continue
-                return ('STACK_SP_ACCESS', 0)
+                return ('STACK_SP_ACCESS', 0, opn.n)
             if opn.type != 4: continue
-            if opn.has_reg(self.ida.idautils.procregs.sp):
+            if opn.has_reg(self.get_sp()):
                 #sanity check first
                 if not self.sanity_check(ins.ea, opn):
                     continue
-                return ('STACK_SP_ACCESS', resign_int(opn.addr, self.native_dtyp))
-            elif opn.has_reg(self.ida.idautils.procregs.bp):
+                return ('STACK_SP_ACCESS', resign_int(opn.addr, self.native_dtyp), opn.n)
+            elif opn.has_reg(self.get_bp()):
                 if not self.sanity_check(ins.ea, opn):
                     continue
-                return ('STACK_BP_ACCESS', resign_int(opn.addr, self.native_dtyp))
+                return ('STACK_BP_ACCESS', resign_int(opn.addr, self.native_dtyp), opn.n)
         return ('', 0)
 
     def identify_bp_assignment(self, s):
@@ -110,16 +110,56 @@ class _Executable():
                 s[:2] == ['sub', 'rsp'] or \
                 s[:3] == ['SUB', 'SP', 'SP']
 
-    def construct_operand(self, op):
+    def identify_sp_deassignment(self, s):
+        return s[:2] == ['add', 'esp'] or \
+                s[:2] == ['add', 'rsp'] or \
+                s[:3] == ['ADD', 'SP', 'SP']
+
+    def construct_operand_x86(self, op):
         if op.type == 3:
             return '[%s]' % self.construct_register(op.reg, op.dtyp)
         if op.type == 4:
             addr = resign_int(op.addr, self.native_dtyp)
             return '[%s%+d]' % (self.construct_register(op.reg, self.native_dtyp), addr)
+
+    def construct_operand_arm(self, op):
+        if op.type == 4:
+            addr = resign_int(op.addr, self.native_dtyp)
+            if addr == 0: return '[%s]' % self.construct_register(op.reg, self.native_dtyp)
+            return '[%s,#%d]' % (self.construct_register(op.reg, self.native_dtyp), addr)
         
     def construct_register(self, reg, dtyp):
-        prefix = 'r' if dtyp == 7 else 'e' if dtyp == 2 else ''
-        return prefix + ['ax', 'cx', 'dx', 'bx', 'sp', 'bp', 'si', 'di', '8', '9', '10', '11', '12'][reg]
+        if self.processor == 0 or self.processor == 1:
+            prefix = 'r' if dtyp == 7 else 'e' if dtyp == 2 else ''
+            suffix = ''
+        else:
+            prefix = ''
+            suffix = ''
+        x86regs = ['ax', 'cx', 'dx', 'bx', 'sp', 'bp', 'si', 'di', '8', '9', '10', '11', '12']
+        armregs = ['R0', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9', 'R10', 'R11', 'R12', 'SP', 'LR']
+        return prefix + [x86regs, x86regs, armregs][self.processor][reg] + suffix
+
+    def get_sp(self, constant=False):
+        if not constant:
+            if self.processor == 0 or self.processor == 1 or self.processor == 2:
+                return self.ida.idautils.procregs.sp
+        else:
+            if self.processor == 0 or self.processor == 1:
+                return 4
+            elif self.processor == 2:
+                return 13
+
+    def get_bp(self, constant=False):
+        if not constant:
+            if self.processor == 0 or self.processor == 1:
+                return self.ida.idautils.procregs.bp
+            elif self.processor == 2:
+                return self.ida.idautils.procregs.r11
+        else:
+            if self.processor == 0 or self.processor == 1:
+                return 5
+            elif self.processor == 2:
+                return 11
 
     def sanity_check(self, ea, op):
         self.ida.idc.OpDecimal(ea, op.n)
@@ -127,10 +167,27 @@ class _Executable():
         idas = self.ida.idc.GetOpnd(ea, op.n)
         if mine not in idas:
             if self.verbose > 1:
-                print '\t*** IDA is lying (%s): %s not in %s' % \
+                 print '\t*** IDA is lying (%x): %s not in %s' % \
                     (ea, mine, idas)
             return False
         return True
+
+    # Access flags - returns an int
+    # bit 0 (lsb) will be set if the operand reads from the address
+    # bit 1 will be set if the operand writes to the address
+
+    def get_access_flags(self, ins, opn):
+        op = ins.Operands[opn]
+        mnem = self.ida.idc.GetMnem(ins.ea)
+        if mnem in ('call', 'push', 'cmp', 'test'): # read-only
+            return 1
+        if mnem in ('pop'): # write-only
+            return 2
+        if mnem in ('lea') and opn == 1: # both - passing a pointer so who knows?
+            return 3
+        if opn == 0: # if it's the first operand, it's usually being written to
+            return 2
+        return 1 # otherwise just reading
 
 
 
@@ -143,10 +200,13 @@ class ElfExecutable(_Executable):
         elfproc = self.elfreader.header.e_machine
         if elfproc == 'EM_386':
             self.processor = 0
+            self.construct_operand = self.construct_operand_x86
         elif elfproc == 'EM_X86_64':
             self.processor = 1
+            self.construct_operand = self.construct_operand_x86
         elif elfproc == 'EM_ARM':
             self.processor = 2
+            self.construct_operand = self.construct_operand_arm
         else:
             raise ValueError('Unsupported processor type: %s' % elfproc)
         self.ida = idalink.IDALink(filename, "idal64" if self.is_64_bit() else "idal")

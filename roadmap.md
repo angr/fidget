@@ -5,7 +5,8 @@ This should be the program's processing checklist:
 - [x] Find all the functions in .text - use idalink
 - [X] Figure out what kind of stack frame is used in each function
 - [X] Find all references to stack memory (ebp-stuff, esp+stuff on calling conventions w/ args in registers)
-- [ ] Figure out which references are actually offsets into variables - i.e. find variables
+- [X] Figure out which references are actually offsets into variables - i.e. find variables
+- [ ] Find limitations on how far things can be moved
 - [ ] Resize stack frame - add CONST_OFFSET + num_vars * CONST_SPACING bytes of size
 - [ ] Relocate variables - move each up by CONST_OFFSET + num_vars_below * CONST_SPACING
 
