@@ -113,6 +113,11 @@ x86/amd64: (r** == e** = **)
 - 31: ss (???)
 - 23: bh
 
+ARM: (:D)
+- 0-12: R0-R12
+- 13: SP
+- 14: LR
+
 
 Different kinds of stack frame headers I've found:
 

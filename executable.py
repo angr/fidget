@@ -3,6 +3,7 @@
 
 from elftools.elf.elffile import ELFFile
 from elftools.elf.descriptions import describe_e_machine
+from elftools.common import exceptions
 import idalink
 
 # Executable
@@ -31,8 +32,8 @@ def resign_int(n, dtyp):
     if (n > top):
         return None
     if (n < top/2): # woo int division
-        return n
-    return -((n ^ top) + 1)
+        return int(n)
+    return int(-((n ^ top) + 1))
 
 def unsign_int(n, dtyp):
     if (dtyp == 0): # 8 bit
@@ -50,8 +51,8 @@ def unsign_int(n, dtyp):
     elif (n < -top/2):
         return None
     if (n >= 0):
-        return n
-    return -((n ^ top) + 1)
+        return int(n)
+    return int(-((n ^ top) + 1))
 
 
 def Executable(filename):
@@ -61,7 +62,9 @@ class _Executable():
     def iterate_instructions(self, funcaddr):
         fstart, fend = next(self.ida.idautils.Chunks(funcaddr))
         while True:
-            yield self.ida.idautils.DecodeInstruction(fstart)
+            a = self.ida.idautils.DecodeInstruction(fstart)
+            if a is not None:   # ... ARM is weird
+                yield a
             fstart = self.ida.idc.NextHead(fstart)
             if fstart >= fend:
                 break
@@ -73,15 +76,29 @@ class _Executable():
         return None # ..?
 
     def identify_instr(self, ins):
-        if self.verbose > 2:
-            print '%8x:       %s' % (ins.ea, self.ida.idc.GetDisasm(ins.ea))
         s = [self.ida.idc.GetMnem(ins.ea)] + map(lambda x: self.ida.idc.GetOpnd(ins.ea, x), range(6))
         if self.identify_bp_assignment(s):
-            return ('STACK_TYPE_BP', 0)
+            return ('STACK_TYPE_BP', ins.Op3.value) # somewhat dangerous hack for ARM
         if self.identify_sp_assignment(s):
             return ('STACK_FRAME_ALLOC', ins.Op2.value if self.processor < 2 else ins.Op3.value)
         if self.identify_sp_deassignment(s):
             return ('STACK_FRAME_DEALLOC', ins.Op2.value if self.processor < 2 else ins.Op3.value)
+        if self.identify_bp_pointer(s):
+            reladdr = ins.Op3.value * (-1 if s[0].lower() == 'sub' else 1)
+            n_ea = ins.ea
+            if self.verbose > 1:
+                print '\t* Found complex pointer'
+            while True:
+                n_ea = self.ida.idc.NextHead(n_ea)
+                n_mnem = self.ida.idc.GetMnem(n_ea).lower()
+                if n_mnem not in ('add', 'sub'): break
+                if self.ida.idc.GetOpnd(n_ea, 1) != s[1]: break
+                if self.ida.idc.GetOpType(n_ea, 2) != 5: break # must be immediate value
+                if self.verbose > 1:
+                    print '\t* Expanding complex pointer'
+                s[1] = self.ida.idc.GetOpnd(n_ea, 0)
+                reladdr += self.ida.idc.GetOperandValue(n_ea, 2) * (-1 if n_mnem == 'sub' else 1)
+            return ('STACK_BP_ACCESS', reladdr, 1)
         for opn in ins.Operands:
             if opn.type == 0: break
             if opn.type == 3 and opn.has_reg(self.ida.idautils.procregs.sp):
@@ -103,7 +120,7 @@ class _Executable():
     def identify_bp_assignment(self, s):
         return s[:3] == ['mov', 'ebp', 'esp'] or \
                 s[:3] == ['mov', 'rbp', 'rsp'] or \
-                s[:4] == ['ADD', 'R11', 'SP', '#0']
+                s[:3] == ['ADD', 'R11', 'SP']
 
     def identify_sp_assignment(self, s):
         return s[:2] == ['sub', 'esp'] or \
@@ -114,6 +131,9 @@ class _Executable():
         return s[:2] == ['add', 'esp'] or \
                 s[:2] == ['add', 'rsp'] or \
                 s[:3] == ['ADD', 'SP', 'SP']
+
+    def identify_bp_pointer(self, s):
+        return (s[0] in ('SUB', 'ADD') and s[2] == 'R11' and s[1] != 'SP')
 
     def construct_operand_x86(self, op):
         if op.type == 3:
@@ -175,19 +195,30 @@ class _Executable():
     # Access flags - returns an int
     # bit 0 (lsb) will be set if the operand reads from the address
     # bit 1 will be set if the operand writes to the address
+    # bit 2 will be set if the operand loads a pointer to the address
+    # bit 3 will be set if the address is read from before it is written to -- must be implemented by the caller
 
     def get_access_flags(self, ins, opn):
         op = ins.Operands[opn]
         mnem = self.ida.idc.GetMnem(ins.ea)
-        if mnem in ('call', 'push', 'cmp', 'test'): # read-only
+        if self.processor < 2:
+            if mnem in ('call', 'push', 'cmp', 'test'): # read-only
+                return 1
+            if mnem in ('pop'): # write-only
+                return 2
+            if mnem in ('lea') and opn == 1: # both - passing a pointer so who knows?
+                return 4
+            if opn == 0: # if it's the first operand, it's usually being written to
+                return 2
+            return 1 # otherwise just reading
+        elif self.processor == 2:
+            if 'LDR' in mnem:
+                return 1
+            elif 'STR' in mnem:
+                return 2
+            elif mnem in ('ADD', 'SUB'):
+                return 4
             return 1
-        if mnem in ('pop'): # write-only
-            return 2
-        if mnem in ('lea') and opn == 1: # both - passing a pointer so who knows?
-            return 3
-        if opn == 0: # if it's the first operand, it's usually being written to
-            return 2
-        return 1 # otherwise just reading
 
 
 
@@ -195,7 +226,12 @@ class ElfExecutable(_Executable):
     def __init__(self, filename):
         self.verbose = 0
         self.filename = filename
-        self.elfreader = ELFFile(open(filename))
+        try:
+            self.elfreader = ELFFile(open(filename))
+            self.error = False
+        except exceptions.ELFError:
+            self.error = True
+            return
         self.native_dtyp = 7 if self.is_64_bit() else 2
         elfproc = self.elfreader.header.e_machine
         if elfproc == 'EM_386':
