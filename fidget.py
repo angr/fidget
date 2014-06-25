@@ -2,6 +2,7 @@
 
 import sys, os
 import executable
+import bisect
 
 def main(filename, options):
     print '\n\n\nLoading %s...' % filename
@@ -25,15 +26,15 @@ def main(filename, options):
 def parse_function(binrepr, funcaddr):
     print 'Parsing %s...' % binrepr.ida.idc.Name(funcaddr)
     bp_based = False
-    size = 0
     size_offset = None
     bp_offset = 0     # in some cases the base pointer will be at a different place than size bytes from sp
     alloc_ops = []    # the instruction(s???) that performs a stack allocation
     dealloc_ops = []  # the instructions that perform a stack deallocation
-    bp_accesses = []  # the stack accesses using the base pointer
-    sp_accesses = []  # the stack accesses using the stack pointer
-    use_accesses = [] # the accesses that actually constitute local vars
-    addresses = set() # the stack offsets of all the accessed local vars
+    #bp_accesses = []  # the stack accesses using the base pointer
+    #sp_accesses = []  # the stack accesses using the stack pointer
+    #use_accesses = [] # the accesses that actually constitute local vars
+    #addresses = set() # the stack offsets of all the accessed local vars
+    variables = VarList(binrepr, 0)
     for ins in binrepr.iterate_instructions(funcaddr):
         typ = binrepr.identify_instr(ins)
         if binrepr.verbose > 2:
@@ -41,190 +42,200 @@ def parse_function(binrepr, funcaddr):
         if typ[0] == '': continue
         if binrepr.verbose > 1:
             print '%0.8x:       %s' % (ins.ea, str(typ))
+
         if typ[0] == 'STACK_TYPE_BP':
             bp_based = True
             bp_offset = typ[1]
+
         elif typ[0] == 'STACK_FRAME_ALLOC':
-            if len(sp_accesses) > 0 or len(bp_accesses) > 0: # allow multiple allocs because ARM has limited immediates
+            if len(variables) > 0: # allow multiple allocs because ARM has limited immediates
                 print '\t*** CRITICAL (%x): Stack alloc after stack access\n' % ins.ea
                 return
             if len(alloc_ops) == 0:
                 size_offset = -binrepr.ida.idc.GetSpd(ins.ea)
             alloc_ops.append(ins)
-            size += typ[1]
+            variables.stack_size += typ[1]
+
         elif typ[0] == 'STACK_FRAME_DEALLOC':
             dealloc_ops.append(ins)
-            if typ[1] != size:
+            if typ[1] != variables.stack_size:
                 print '\t*** CRITICAL (%x): Stack dealloc does not match alloc??\n' % ins.ea
                 return
+
         elif typ[0] == 'STACK_SP_ACCESS':
-            if size == 0:
+            if variables.stack_size == 0:
                 if binrepr.verbose > 0: print '\tFunction does not appear to have a stack frame (1)\n'
                 return
-            offset = binrepr.ida.idc.GetSpd(ins.ea) + typ[1] + size + size_offset if size_offset is not None else 0
+            offset = binrepr.ida.idc.GetSpd(ins.ea) + typ[1] + variables.stack_size + size_offset if size_offset is not None else 0
             if offset < 0:
-                if binrepr.verbose > 0: print '\t*** Warning (%x): Function appears to be accessing above its stack frame, discarding instruction' % ins.ea
+                if binrepr.verbose > 0: print '\t*** Warning (%x): Function appears ' + \
+                        'to be accessing above its stack frame, discarding instruction' % ins.ea
                 continue
             # Do not filter out arg accesses here because those will need to be adjusted
-            sp_accesses.append([ins, offset, typ[2]])
+            Access(ins.ea, typ[2], False, typ[1], typ[1] - offset, binrepr, variables)
+
         elif typ[0] == 'STACK_BP_ACCESS':
-            if size == 0:
-                print 'aaa'
+            if variables.stack_size == 0:
                 if binrepr.verbose > 0: print '\tFunction does not appear to have a stack frame (2)\n'
                 return
             if not bp_based:
                 continue        # silently ignore bp access in sp frame
             if typ[1] > 0:
                 continue        # this is one of the function's arguments
-            bp_accesses.append([ins, typ[1] + size + bp_offset, typ[2]])
+            Access(ins.ea, typ[2], True, typ[1], variables.stack_size + bp_offset, binrepr, variables)
+
         else:
             print '\t*** CRITICAL: You forgot to update parse_function(), jerkface!\n'
+
     if len(alloc_ops) == 0:
         if binrepr.verbose > 0: print '\tFunction does not appear to have a stack frame (3)\n'
         return
-    if bp_based:
-        #arg_accesses = filter(lambda x: x[1] > 0, bp_accesses)
-        addresses = set(map(lambda x: x[1], bp_accesses))
-        use_accesses = [x for x in bp_accesses]
     
 # Find the lowest sp-access that isn't an argument to the next function
 # By starting at accesses to [esp] and stepping up a word at a time
 # When it misses a step, that's when we're onto the stack vars
 # So start adding elements into addresses and use_accesses
+    if binrepr.is_convention_stack_args():
+        wordsize = executable.word_size[binrepr.native_dtyp]
+        i = 0
+        while True:
+            if i in variables:
+                del variables[i]
+                i += wordsize
+            else:
+                break
 
-    wordsize = executable.word_size[binrepr.native_dtyp]
-    sp_iter = iter(sorted(sp_accesses, key=lambda x: x[1]))
-    last = -wordsize          # first one should be 0, so this is the one "before it"
-    still_args = binrepr.is_convention_stack_args()
-        # short-circuit this if the calling convention
-        # doesn't pass arguments on the stack
-    for sp_access in sp_iter:
-        if still_args:
-            if last != sp_access[1] and sp_access[1] - last != wordsize:
-                still_args = False
-            last = sp_access[1]
-        if not still_args:
-            if sp_access[1] > size:
-                break                 # Don't count this or anything past it, it's args  
-            addresses.add(sp_access[1])
-            use_accesses.append(sp_access)
-
-    if len(use_accesses) > 0:
-        if binrepr.verbose > 0: print '\tFunction has a %s-based stack frame of %d bytes.\n\t%d access%s to %d address%s %s made.\n\tThere is %s deallocation.' % \
-            ('bp' if bp_based else 'sp', size, 
-            len(use_accesses), '' if len(use_accesses) == 1 else 'es',
-            len(addresses), '' if len(addresses) == 1 else 'es',
-            'is' if len(use_accesses) == 1 else 'are',
+    num_vars = len(variables)
+    if num_vars > 0:
+        if binrepr.verbose > 0:
+            num_accs = variables.num_accesses()
+            print '''\tFunction has a %s-based stack frame of %d bytes.
+        \t%d access%s to %d address%s %s made.
+        \tThere is %s deallocation.''' % \
+            ('bp' if bp_based else 'sp', variables.stack_size, 
+            num_accs, '' if num_accs == 1 else 'es',
+            num_vars, '' if num_vars == 1 else 'es',
+            'is' if num_accs == 1 else 'are',
             'an automatic' if len(dealloc_ops) == 0 else 'a manual')
 
         if binrepr.verbose > 1:
-            print 'Stack addresses:', sorted(addresses)
+            print 'Stack addresses:', variables.addr_list
     else:
-        if binrepr.verbose > 0: print '\tFunction has a %d-byte stack frame, but doesn\'t use it for local vars\n' % size
+        if binrepr.verbose > 0:
+            print '\tFunction has a %d-byte stack frame, but doesn\'t use it for local vars\n' % variables.stack_size
         return
 
-    # MOVING ON
-    # We now have all the addresses we care about
-    # let's organize them into variables
-    
-    vars = VarList(binrepr, size)
-    vars.add_vars(addresses)
-    vars.add_accesses(use_accesses)
-    vars.collapse()
+    variables.collapse()
 
     print
 
+class Access():
+    def __init__(self, ea, opn, bp, value, offset, binrepr, varlist):
+        self.ea = ea
+        self.opn = opn
+        self.bp = bp
+        self.value = value
+        self.offset_inherant = offset
+        self.binrepr = binrepr
+        self.varlist = varlist
+
+        self.access_flags = binrepr.get_access_flags(ea, opn)   # get access flags
+        Variable(varlist, self)                                 # make a variable or add it to an existing one
+        self.variable = varlist[self.address()]                 # get reference to variable
+        self.offset_variable = 0
+
+    def address(self):
+        return self.offset_inherant + self.value
+
+class Variable():
+    def __init__(self, varlist, access):
+        if access.address() in varlist:
+            varlist[access.address()].add_access(access)
+            return
+        self.varlist = varlist
+        self.address = access.address()
+        self.accesses = []
+        self.access_flags = 0
+        self.add_access(access)
+        varlist.add_variable(self)
+
+    def add_access(self, access):
+        self.accesses.append(access)
+        access.offset_variable = access.address() - self.address
+        if access.access_flags == 1 and self.access_flags == 0:
+            self.access_flags = 9
+        else:
+            self.access_flags |= access.access_flags
+
+    def merge(self, child):
+        for access in child.accesses:
+            access.offset_variable = access.address() - self.address
+            self.accesses.append(access)
 
 
 class VarList():
     def __init__(self, binrepr, stack_size):
-        self.vars = []
+        self.variables = {} # all the variables, indexed by address
+        self.addr_list = [] # all the addresses, kept sorted
         self.binrepr = binrepr
         self.stack_size = stack_size
 
-    def add_vars(self, addrlist):
-        for addr in sorted(addrlist):
-            self.add_var(addr)
+    def __getitem__(self, key):
+        return self.variables[key]
 
-    def add_var(self, addr):
-        assert addr < self.stack_size # we dropped the requirement that addr >= 0 because ARM IS A BUTT
-        if len(self.vars) == 0:
-            self.vars = [{"addr": addr, "size": self.stack_size - addr, "accesses": [], "flags": 0}]
-        elif addr < self.vars[0]["addr"]:
-            self.vars = [{"addr": addr, "size": self.vars[0]["addr"] - addr, "accesses": [], "flags": 0}] + self.vars
-        elif addr > self.vars[-1]["addr"]:
-            self.vars[-1]["size"] = addr - self.vars[-1]["addr"]
-            self.vars.append({"addr": addr, "size": self.stack_size - addr, "accesses": [], "flags": 0})
-        else:       # TODO: Optimize with binary search
-            for i, item in enumerate(self.vars):
-                if i == 0: continue
-                if addr < item["addr"]:
-                    self.vars[i-1]["size"] = addr - self.vars[i-1]["addr"]
-                    self.vars = self.vars[:i] + [{"addr": addr, "size": item["addr"] - addr, "accesses": [], flags: 0}] + self.vars[i:]
-                    break
+    def __delitem__(self, key):
+        del self.variables[key]
+        self.addr_list.remove(key)
 
-    def add_accesses(self, accesslist):
-        for access in accesslist:
-            self.add_access(access)
+    def __contains__(self, val):
+        return val in self.variables
 
-    def add_access(self, access):  # access is a list [ins, addr, opn]
-        var = self.get_var(access[1])   # it'll become [ins, offset, opn]
-        if var is None:
-            print '\t*** CRITICAL (%x): Access has not been documented??' % access[0].ea
-            return
-        access[1] = 0
-        var["accesses"].append(access)
-        newflags = self.binrepr.get_access_flags(access[0], access[2])
-        if newflags == 1 and var["flags"] == 0:
-            var["flags"] = 9
-        else:
-            var["flags"] |= newflags
+    def __len__(self):
+        return len(self.variables)
 
+    def add_variable(self, var):
+        self.variables[var.address] = var
+        bisect.insort(self.addr_list, var.address)
 
-    def get_var(self, addr): # TODO: Optimize with binary search
-        for var in self.vars:
-            if var["addr"] == addr:
-                return var
-        return None
+    def num_accesses(self):
+        return sum(map(lambda x: len(x.accesses), self.get_all_vars()))
+
+    def get_all_vars(self):
+        return map(lambda x: self.variables[x], self.addr_list)
 
     def collapse(self):
         i = 0               # old fashioned loop because we're removing items
-        while i < len(self.vars) - 1:
+        while i < len(self.addr_list) - 1:
             i += 1
-            var = self.vars[i]
-            if var["addr"] < 0:
+            var = self.variables[self.addr_list[i]]
+            if var.address < 0:
                 self.merge_down(i)
                 i -= 1
-            elif var["addr"] % executable.word_size[self.binrepr.native_dtyp] != 0:
+            elif var.address % executable.word_size[self.binrepr.native_dtyp] != 0:
                 self.merge_up(i)
                 i -= 1
-            elif var["flags"] & 8:
+            elif var.access_flags & 8:
                 self.merge_up(i)
                 i -= 1
-            elif var["flags"] & 4:
+            elif var.access_flags & 4:
                 pass
-            elif var["flags"] != 3:
+            elif var.access_flags != 3:
                 self.merge_up(i)
                 i -= 1
 
     def merge_up(self, i):
-        child = self.vars.pop(i)
-        parent = self.vars[i-1]
-        for access in child["accesses"]:
-            access[1] += parent["size"] # adjust offset
-            parent["accesses"].append(access)
-        parent["size"] += child["size"]
+        child = self.variables.pop(self.addr_list.pop(i))
+        parent = self.variables[self.addr_list[i-1]]
+        parent.merge(child)
         if self.binrepr.verbose > 1:
-            print '\tMerged %d into %d' % (child["addr"], parent["addr"])
+            print '\tMerged %d into %d' % (child.address, parent.address)
 
     def merge_down(self, i):
-        child = self.vars.pop(i)
-        parent = self.vars[i]
-        for access in child["accesses"]:
-            access[1] -= child["size"]
-            parent["accesses"].append(access)
+        child = self.variables.pop(self.addr_list.pop(i))
+        parent = self.variables[self.addr_list[i]]
+        parent.merge(child)
         if self.binrepr.verbose > 1:
-            print '\tMerged %d down to %d' % (child["addr"], parent["addr"])
+            print '\tMerged %d down to %d' % (child.address, parent.address)
 
     def __str__(self):
         return '\n'.join(str(x) for x in self.vars)

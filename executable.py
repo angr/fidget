@@ -76,7 +76,7 @@ class _Executable():
         return None # ..?
 
     def identify_instr(self, ins):
-        s = [self.ida.idc.GetMnem(ins.ea)] + map(lambda x: self.ida.idc.GetOpnd(ins.ea, x), range(6))
+        s = [self.ida.idc.GetMnem(ins.ea)] + map(lambda x: self.ida.idc.GetOpnd(ins.ea, x), xrange(6))
         if self.identify_bp_assignment(s):
             return ('STACK_TYPE_BP', ins.Op3.value) # somewhat dangerous hack for ARM
         if self.identify_sp_assignment(s):
@@ -187,8 +187,7 @@ class _Executable():
         idas = self.ida.idc.GetOpnd(ea, op.n)
         if mine not in idas:
             if self.verbose > 1:
-                 print '\t*** IDA is lying (%x): %s not in %s' % \
-                    (ea, mine, idas)
+                 print '\t*** IDA is lying (%x): %s not in %s' % (ea, mine, idas)
             return False
         return True
 
@@ -198,15 +197,15 @@ class _Executable():
     # bit 2 will be set if the operand loads a pointer to the address
     # bit 3 will be set if the address is read from before it is written to -- must be implemented by the caller
 
-    def get_access_flags(self, ins, opn):
-        op = ins.Operands[opn]
-        mnem = self.ida.idc.GetMnem(ins.ea)
+    def get_access_flags(self, ea, opn):
+        op = self.ida.idc.GetOpnd(ea, opn)
+        mnem = self.ida.idc.GetMnem(ea)
         if self.processor < 2:
             if mnem in ('call', 'push', 'cmp', 'test'): # read-only
                 return 1
             if mnem in ('pop'): # write-only
                 return 2
-            if mnem in ('lea') and opn == 1: # both - passing a pointer so who knows?
+            if mnem in ('lea') and opn == 1: # pointer
                 return 4
             if opn == 0: # if it's the first operand, it's usually being written to
                 return 2
