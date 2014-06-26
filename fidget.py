@@ -71,7 +71,9 @@ def parse_function(binrepr, funcaddr):
                 if binrepr.verbose > 0: print '\t*** Warning (%x): Function appears ' + \
                         'to be accessing above its stack frame, discarding instruction' % ins.ea
                 continue
-            # Do not filter out arg accesses here because those will need to be adjusted
+            if offset > variables.stack_size:
+                continue        # this is one of the fuction's arguments
+            # Do not filter out arg setups here because those will need to be adjusted
             Access(ins.ea, typ[2], False, typ[1], typ[1] - offset, binrepr, variables)
 
         elif typ[0] == 'STACK_BP_ACCESS':
@@ -93,13 +95,12 @@ def parse_function(binrepr, funcaddr):
     
 # Find the lowest sp-access that isn't an argument to the next function
 # By starting at accesses to [esp] and stepping up a word at a time
-# When it misses a step, that's when we're onto the stack vars
-# So start adding elements into addresses and use_accesses
+
     if binrepr.is_convention_stack_args():
         wordsize = executable.word_size[binrepr.native_dtyp]
         i = 0
         while True:
-            if i in variables:
+            if i in variables and variables[i].all_sp:
                 del variables[i]
                 i += wordsize
             else:
@@ -110,8 +111,8 @@ def parse_function(binrepr, funcaddr):
         if binrepr.verbose > 0:
             num_accs = variables.num_accesses()
             print '''\tFunction has a %s-based stack frame of %d bytes.
-        \t%d access%s to %d address%s %s made.
-        \tThere is %s deallocation.''' % \
+\t%d access%s to %d address%s %s made.
+\tThere is %s deallocation.''' % \
             ('bp' if bp_based else 'sp', variables.stack_size, 
             num_accs, '' if num_accs == 1 else 'es',
             num_vars, '' if num_vars == 1 else 'es',
@@ -156,11 +157,14 @@ class Variable():
         self.address = access.address()
         self.accesses = []
         self.access_flags = 0
+        self.all_sp = True
         self.add_access(access)
         varlist.add_variable(self)
 
     def add_access(self, access):
         self.accesses.append(access)
+        if self.all_sp and access.bp:
+            self.all_sp = False
         access.offset_variable = access.address() - self.address
         if access.access_flags == 1 and self.access_flags == 0:
             self.access_flags = 9
