@@ -14,7 +14,7 @@ import idalink
 # the actual class
 
 #hopefully the only processors we should ever have to target
-processors = ['x86', 'amd64', 'arm', 'ppc', 'mips']
+processors = ['i386', 'x86_64', 'arm', 'ppc', 'mips']
 
 word_size = {0: 1, 1: 2, 2: 4, 7: 8}
 
@@ -220,13 +220,13 @@ class _Executable():
             return 1
 
 
-
 class ElfExecutable(_Executable):
     def __init__(self, filename):
         self.verbose = 0
         self.filename = filename
         try:
-            self.elfreader = ELFFile(open(filename))
+            self.filestream = open(filename)
+            self.elfreader = ELFFile(self.filestream)
             self.error = False
         except exceptions.ELFError:
             self.error = True
@@ -244,6 +244,15 @@ class ElfExecutable(_Executable):
             self.construct_operand = self.construct_operand_arm
         else:
             raise ValueError('Unsupported processor type: %s' % elfproc)
+
+        myproc = __import__('platform').machine()
+        try:
+            myproc_id = platforms.index(myproc)
+            self.nonnative = myproc_id != self.processor
+        except:
+            self.nonnative = True
+        if self.nonnative:
+            print "Warning: analysing binary for non-native platform"
         self.ida = idalink.IDALink(filename, "idal64" if self.is_64_bit() else "idal")
         self.get_section_by_name = self.elfreader.get_section_by_name
 
@@ -253,4 +262,31 @@ class ElfExecutable(_Executable):
     def is_convention_stack_args(self):
         return self.processor == 0
 
+
+class BinaryData():
+    def __init__(self, memaddr, value, binrepr):
+        self.memaddr = memaddr
+        self.value = value
+        self.binrepr = binrepr
+
+        self.physaddr = binrepr.ida.idaapi.get_fileregion_offset(memaddr)
+        self.inslen = binrepr.ida.idautils.DecodeInstruction(memaddr).size
+
+        binrepr.filestream.seek(self.physaddr)
+        self.insbytes = binrepr.filestream.read(self.inslen)
+        self.search_value()
+
+    def search_value(self):
+        pass
+
+    def extract_bit_value(self, bit_offset, bit_length):
+        return (int(self.insbytes.encode('hex'), 16) >> (8*len(self.insbytes) - bit_length - bit_offset)) & ((1 << bit_length) - 1)
+
+    def endian_reverse(self, x, n):
+        out = 0
+        for _ in xrange(n):
+            out <<= 8
+            out |= x & 0xFF
+            x >>= 8
+        return out
 

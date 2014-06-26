@@ -10,6 +10,14 @@ This should be the program's processing checklist:
 - [ ] Resize stack frame - add CONST_OFFSET + num_vars * CONST_SPACING bytes of size
 - [ ] Relocate variables - move each up by CONST_OFFSET + num_vars_below * CONST_SPACING
 
+There needs to be a good way to create a nice bridge between the values 
+reported by IDA and the actual bits, so here's my checklist for how to do that:
+
+- [X] Everything happens in this BinaryData class, in executable.py
+- [ ] If we're ARM, fuck everything (special case)
+- [ ] Otherwise, start at the longest word size and iterate down to the smaller ones when you run out of room
+- [ ] Iterate through the bits (only word-aligned?) and check if the value you're searching for is present
+- [ ] If it is, sanity check by changing it (via ida's binary patching stuffs), reading off the instruction string from ida again, and making sure that the only change in the string is exactly what you meant to change
 
 The idaPy docs suuuuuck (protip: read the source), so here's my notes on it:
 
@@ -65,6 +73,12 @@ The idaPy docs suuuuuck (protip: read the source), so here's my notes on it:
 
 - `idc.GetSpd(memaddr)`
     Returns the difference between esp and ebp at this point in the function
+
+- `idaapi.get_fileregion_offset(memaddr)`
+    Returns the physaddr corresponding to the memaddr
+
+- `idaapi.get_fileregion_ea(physaddr)`
+    Returns the memaddr corresponding to the physaddr
 
 - `idautils.DecodeInstruction(memaddr)`
     Returns an object of type `idaapi.insn_t` describing the instruction at the given address
