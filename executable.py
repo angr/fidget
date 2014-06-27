@@ -5,6 +5,7 @@ from elftools.elf.elffile import ELFFile
 from elftools.elf.descriptions import describe_e_machine
 from elftools.common import exceptions
 import idalink
+import struct
 
 # Executable
 # not actually a class! fakes being a class because it
@@ -256,6 +257,12 @@ class ElfExecutable(_Executable):
         self.ida = idalink.IDALink(filename, "idal64" if self.is_64_bit() else "idal")
         self.get_section_by_name = self.elfreader.get_section_by_name
 
+        def PatchQwordHack(ea, value):
+            self.ida.idc.PatchDword(ea, value & ((1 << 32) - 1))
+            self.ida.idc.PatchDword(ea + 4, value >> 32)
+
+        self.ida.idc.PatchQword = PatchQwordHack
+
     def is_64_bit(self):
         return self.elfreader.header.e_ident.EI_CLASS == 'ELFCLASS64'
 
@@ -264,10 +271,13 @@ class ElfExecutable(_Executable):
 
 
 class BinaryData():
-    def __init__(self, memaddr, value, binrepr):
+    def __init__(self, memaddr, value, binrepr, opn, s):
         self.memaddr = memaddr
         self.value = value
+        self.ovalue = value
         self.binrepr = binrepr
+        self.opn = opn
+        self.s = s
 
         self.physaddr = binrepr.ida.idaapi.get_fileregion_offset(memaddr)
         self.inslen = binrepr.ida.idautils.DecodeInstruction(memaddr).size
@@ -277,9 +287,48 @@ class BinaryData():
         self.search_value()
 
     def search_value(self):
-        pass
+        if self.binrepr.processor == 2:
+            pass #fuck everything
+        else:
+            found = False
+            for word_size in (64, 32, 16, 8):
+                for byte_offset in xrange(len(self.insbytes)):
+                    result = self.extract_bit_value(byte_offset*8, word_size)
+                    if result is None: continue
+                    result = self.endian_reverse(result, word_size/8)
+                    if result != self.value: continue
+                    self.value = self.value ^ ((1 << word_size) - 1)
+                    self.bit_length = word_size
+                    self.bit_offset = byte_offset * 8
+                    if self.sanity_check():
+                        found = True
+                        break
+                if found:
+                    break
+            if not found:
+                print '*** CRITICAL (%x): Absolutely could not find value %d' % (self.memaddr, self.value)
+
+    def sanity_check(self):
+        self.patch_value()
+        if self.binrepr.ida.idc.GetMnem(self.memaddr) != self.s[0]:
+            self.restore_value()
+            return False
+        for i in xrange(6):
+            if i == self.opn:
+                self.binrepr.ida.idc.OpDecimal(self.memaddr, i)
+                if not str(self.value) in self.binrepr.ida.idc.GetOpnd(self.memaddr, i):
+                    self.restore_value()
+                    return False
+            else:
+                if self.binrepr.ida.idc.GetOpnd(self.memaddr, i) != self.s[i+1]:
+                    self.restore_value()
+                    return False
+        self.restore_value()
+        return True
 
     def extract_bit_value(self, bit_offset, bit_length):
+        if bit_offset + bit_length > len(self.insbytes) * 8:
+            return None
         return (int(self.insbytes.encode('hex'), 16) >> (8*len(self.insbytes) - bit_length - bit_offset)) & ((1 << bit_length) - 1)
 
     def endian_reverse(self, x, n):
@@ -289,4 +338,49 @@ class BinaryData():
             out |= x & 0xFF
             x >>= 8
         return out
+
+    def patch_value(self):
+        if self.bit_offset % 8 == 0 and self.bit_length % 8 == 0:
+            ltodo = self.bit_length
+            otodo = self.bit_offset/8
+            vtodo = self.value
+            while ltodo >= 32:
+                self.binrepr.ida.idc.PatchDword(self.memaddr + otodo, vtodo & 0xFFFFFFFF)
+                otodo += 4
+                ltodo -= 32
+                vtodo >>= 32
+            while ltodo > 0:
+                self.binrepr.ida.idc.PatchByte(self.memaddr + otodo, vtodo & 0xFF)
+                otodo += 1
+                ltodo -= 8
+                vtodo >>= 8
+        else:
+            raise Exception("Unaligned writes unimplemented")
+
+    def get_patch_data(self):
+        if self.bit_offset % 8 == 0 and self.bit_length % 8 == 0:
+            outs = [x for x in self.insbytes]
+            ltodo = self.bit_length
+            otodo = self.bit_offset/8
+            vtodo = self.value
+            while ltodo > 0:
+                outs[otodo] = chr(vtodo & 0xFF)
+                otodo += 1
+                ltodo -= 8
+                vtodo >>= 8
+            return (self.physaddr, ''.join(outs))
+        else:
+            raise Exception("Unaligned writes unimplemented")
+
+    def restore_value(self):
+        self.value = self.ovalue
+        ptr = self.memaddr
+        bts = self.insbytes
+        while len(bts) >= 4:
+            self.binrepr.ida.idc.PatchDword(ptr, struct.unpack('I', bts[:4])[0])
+            bts = bts[4:]
+            ptr += 4
+        for char in bts:
+            self.binrepr.ida.idc.PatchByte(1, ord(char))
+            ptr += 1
 

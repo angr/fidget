@@ -15,9 +15,11 @@ reported by IDA and the actual bits, so here's my checklist for how to do that:
 
 - [X] Everything happens in this BinaryData class, in executable.py
 - [ ] If we're ARM, fuck everything (special case)
-- [ ] Otherwise, start at the longest word size and iterate down to the smaller ones when you run out of room
-- [ ] Iterate through the bits (only word-aligned?) and check if the value you're searching for is present
-- [ ] If it is, sanity check by changing it (via ida's binary patching stuffs), reading off the instruction string from ida again, and making sure that the only change in the string is exactly what you meant to change
+- [X] Otherwise, start at the longest word size and iterate down to the smaller ones when you run out of room
+- [X] Iterate through the bits (only word-aligned?) and check if the value you're searching for is present
+- [X] If it is, sanity check by changing it (via ida's binary patching stuffs), reading off the instruction string from ida again, and making sure that the only change in the string is exactly what you meant to change
+- [X] Generate patch data for arbitrary value changes
+- [ ] Generate constraints for acceptable values (bit width, bit shift)
 
 The idaPy docs suuuuuck (protip: read the source), so here's my notes on it:
 
