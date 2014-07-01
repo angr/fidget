@@ -4,20 +4,14 @@
 from elftools.elf.elffile import ELFFile
 from elftools.elf.descriptions import describe_e_machine
 from elftools.common import exceptions
-import idalink
+import idalink, symexec
 import struct
-
-# Executable
-# not actually a class! fakes being a class because it
-# basically just looks at the filetype, determines what kind
-# of binary it is (ELF, PE, w/e) and switches control to an
-# appropriate class, all of which inherit from _Executable,
-# the actual class
 
 #hopefully the only processors we should ever have to target
 processors = ['i386', 'x86_64', 'arm', 'ppc', 'mips']
 
 word_size = {0: 1, 1: 2, 2: 4, 7: 8}
+dtyp_by_width = {8: 0, 16: 1, 32: 2, 64: 7}
 
 def resign_int(n, dtyp):
     if (dtyp == 0): # 8 bit
@@ -55,6 +49,12 @@ def unsign_int(n, dtyp):
         return int(n)
     return int(-((n ^ top) + 1))
 
+# Executable
+# not actually a class! fakes being a class because it
+# basically just looks at the filetype, determines what kind
+# of binary it is (ELF, PE, w/e) and switches control to an
+# appropriate class, all of which inherit from _Executable,
+# the actual class
 
 def Executable(filename):
     return ElfExecutable(filename) # ...
@@ -81,10 +81,15 @@ class _Executable():
         if self.identify_bp_assignment(s):
             return ('STACK_TYPE_BP', ins.Op3.value) # somewhat dangerous hack for ARM
         if self.identify_sp_assignment(s):
-            return ('STACK_FRAME_ALLOC', ins.Op2.value if self.processor < 2 else ins.Op3.value)
+            return ('STACK_FRAME_ALLOC', \
+                BinaryData(ins.ea, 1 if self.processor < 2 else 2, \
+                  ins.Op2.value if self.processor < 2 else ins.Op3.value, s, self))
         if self.identify_sp_deassignment(s):
-            return ('STACK_FRAME_DEALLOC', ins.Op2.value if self.processor < 2 else ins.Op3.value)
+            return ('STACK_FRAME_DEALLOC', \
+                BinaryData(ins.ea, 1 if self.processor < 2 else 2, \
+                  ins.Op2.value if self.processor < 2 else ins.Op3.value, s, self))
         if self.identify_bp_pointer(s):
+            raise Exception('*** CRITICAL: Complex pointers not supported yet with BinaryData')
             reladdr = ins.Op3.value * (-1 if s[0].lower() == 'sub' else 1)
             n_ea = ins.ea
             if self.verbose > 1:
@@ -105,17 +110,17 @@ class _Executable():
             if opn.type == 3 and opn.has_reg(self.ida.idautils.procregs.sp):
                 if not self.sanity_check(ins.ea, opn):
                     continue
-                return ('STACK_SP_ACCESS', 0, opn.n)
+                return ('STACK_SP_ACCESS', BinaryData(ins.ea, opn.n, None, s, self))
             if opn.type != 4: continue
             if opn.has_reg(self.get_sp()):
                 #sanity check first
                 if not self.sanity_check(ins.ea, opn):
                     continue
-                return ('STACK_SP_ACCESS', resign_int(opn.addr, self.native_dtyp), opn.n)
+                return ('STACK_SP_ACCESS', BinaryData(ins.ea, opn.n, resign_int(opn.addr, self.native_dtyp), s, self))
             elif opn.has_reg(self.get_bp()):
                 if not self.sanity_check(ins.ea, opn):
                     continue
-                return ('STACK_BP_ACCESS', resign_int(opn.addr, self.native_dtyp), opn.n)
+                return ('STACK_BP_ACCESS', BinaryData(ins.ea, opn.n, resign_int(opn.addr, self.native_dtyp), s, self))
         return ('', 0)
 
     def identify_bp_assignment(self, s):
@@ -270,8 +275,8 @@ class ElfExecutable(_Executable):
         return self.processor == 0
 
 
-class BinaryData():
-    def __init__(self, memaddr, value, binrepr, opn, s):
+class BinaryData():         # The fundemental link between binary data and things that know what binary data should be
+    def __init__(self, memaddr, opn, value, s, binrepr):
         self.memaddr = memaddr
         self.value = value
         self.ovalue = value
@@ -284,21 +289,34 @@ class BinaryData():
 
         binrepr.filestream.seek(self.physaddr)
         self.insbytes = binrepr.filestream.read(self.inslen)
-        self.search_value()
+
+        if value is not None:
+            self.search_value()
+            self.signed = True
+            if s[0] in ('add', 'sub'):
+                self.signed = False
+
+            self.symval = symexec.BitVec(hex(memaddr) + '_' + str(opn), self.bit_length + (1 if self.signed else 0))
+            if self.signed: binrepr.symrepr.add(self.symval >= 0)
+            if self.bit_shift != 1: binrepr.symrepr.add(self.symval % (1 << self.bit_shift) == 0)
+        else:
+            self.value = 0
 
     def search_value(self):
         if self.binrepr.processor == 2:
             pass #fuck everything
         else:
+            self.bit_shift = 0
             found = False
             for word_size in (64, 32, 16, 8):
+                self.bit_length = word_size
                 for byte_offset in xrange(len(self.insbytes)):
+                    self.set_uvalue()
                     result = self.extract_bit_value(byte_offset*8, word_size)
                     if result is None: continue
                     result = self.endian_reverse(result, word_size/8)
-                    if result != self.value: continue
-                    self.value = self.value ^ ((1 << word_size) - 1)
-                    self.bit_length = word_size
+                    if result != self.uvalue: continue
+                    self.value = abs(self.value) / 2 + 0x35
                     self.bit_offset = byte_offset * 8
                     if self.sanity_check():
                         found = True
@@ -306,21 +324,32 @@ class BinaryData():
                 if found:
                     break
             if not found:
-                print '*** CRITICAL (%x): Absolutely could not find value %d' % (self.memaddr, self.value)
+                raise Exception('*** CRITICAL (%x): Absolutely could not find value %d' % (self.memaddr, self.value))
+
+    def set_uvalue(self):
+        self.uvalue = self.value if self.value >= 0 else 1 + (-self.value ^ ((1 << self.bit_length) - 1))
 
     def sanity_check(self):
+        if self.binrepr.verbose > 1: print '\tsanity checking for operand', self.opn
         self.patch_value()
         if self.binrepr.ida.idc.GetMnem(self.memaddr) != self.s[0]:
+            if self.binrepr.verbose > 1: print 'failed mnem check'
             self.restore_value()
             return False
         for i in xrange(6):
             if i == self.opn:
                 self.binrepr.ida.idc.OpDecimal(self.memaddr, i)
                 if not str(self.value) in self.binrepr.ida.idc.GetOpnd(self.memaddr, i):
+                    if self.binrepr.verbose > 1:
+                        print 'failed expectation check'
+                        print self.value, 'not in', self.binrepr.ida.idc.GetOpnd(self.memaddr, i)
                     self.restore_value()
                     return False
             else:
                 if self.binrepr.ida.idc.GetOpnd(self.memaddr, i) != self.s[i+1]:
+                    if self.binrepr.verbose > 1:
+                        print 'failed regression check for opnd', i
+                        print self.binrepr.ida.idc.GetOpnd(self.memaddr, i), '!=', self.s[i+1]
                     self.restore_value()
                     return False
         self.restore_value()
@@ -341,9 +370,10 @@ class BinaryData():
 
     def patch_value(self):
         if self.bit_offset % 8 == 0 and self.bit_length % 8 == 0:
+            self.set_uvalue()
             ltodo = self.bit_length
             otodo = self.bit_offset/8
-            vtodo = self.value
+            vtodo = self.uvalue
             while ltodo >= 32:
                 self.binrepr.ida.idc.PatchDword(self.memaddr + otodo, vtodo & 0xFFFFFFFF)
                 otodo += 4
@@ -359,10 +389,11 @@ class BinaryData():
 
     def get_patch_data(self):
         if self.bit_offset % 8 == 0 and self.bit_length % 8 == 0:
+            self.set_uvalue()
             outs = [x for x in self.insbytes]
             ltodo = self.bit_length
             otodo = self.bit_offset/8
-            vtodo = self.value
+            vtodo = self.uvalue
             while ltodo > 0:
                 outs[otodo] = chr(vtodo & 0xFF)
                 otodo += 1
@@ -381,6 +412,28 @@ class BinaryData():
             bts = bts[4:]
             ptr += 4
         for char in bts:
-            self.binrepr.ida.idc.PatchByte(1, ord(char))
+            self.binrepr.ida.idc.PatchByte(ptr, ord(char))
             ptr += 1
+
+    def get_range(self):
+        if self.signed:
+            half = (1 << self.bit_length) / 2
+            return (-half, half, 1 << self.bit_shift)
+        else:
+            return (0, 1 << self.bit_length, 1 << self.bit_shift)
+
+    def __contains__(self, val):        # allows checking if an address is in-range with the `in` operator
+        bot, top, step = self.get_range()
+        if val < bot or val >= top: return False
+        if (val - bot) % step != 0: return False
+        return True
+
+    def __iter__(self):                 # CAREFUL-- Don't use these for constraint solving unless you KNOW WHAT YOU'RE DOING
+        return xrange(*self.get_range())  # This quickly turn into a fuckall-deep nested loop nest and everything will die
+
+    def __reversed__(self):
+        return reversed(xrange(*self.get_range()))
+
+    def __str__(self):
+        return '%s at $%0.8x' % (self.value, self.memaddr)
 

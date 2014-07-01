@@ -3,6 +3,7 @@
 import sys, os
 import executable
 import bisect
+import symexec
 
 def main(filename, options):
     print '\n\n\nLoading %s...' % filename
@@ -25,6 +26,8 @@ def main(filename, options):
 
 def parse_function(binrepr, funcaddr):
     print 'Parsing %s...' % binrepr.ida.idc.Name(funcaddr)
+    symrepr = symexec.Solver()
+    binrepr.symrepr = symrepr
     bp_based = False
     size_offset = None
     bp_offset = 0     # in some cases the base pointer will be at a different place than size bytes from sp
@@ -41,7 +44,7 @@ def parse_function(binrepr, funcaddr):
             print '%0.8x:       %s' % (ins.ea, binrepr.ida.idc.GetDisasm(ins.ea))
         if typ[0] == '': continue
         if binrepr.verbose > 1:
-            print '%0.8x:       %s' % (ins.ea, str(typ))
+            print '       %s: %s' % typ
 
         if typ[0] == 'STACK_TYPE_BP':
             bp_based = True
@@ -53,12 +56,12 @@ def parse_function(binrepr, funcaddr):
                 return
             if len(alloc_ops) == 0:
                 size_offset = -binrepr.ida.idc.GetSpd(ins.ea)
-            alloc_ops.append(ins)
-            variables.stack_size += typ[1]
+            alloc_ops.append(typ[1])
+            variables.stack_size += typ[1].value
 
         elif typ[0] == 'STACK_FRAME_DEALLOC':
-            dealloc_ops.append(ins)
-            if typ[1] != variables.stack_size:
+            dealloc_ops.append(typ[1])
+            if typ[1].value != variables.stack_size:  # I don't think there are manual deallocs on ARM!
                 print '\t*** CRITICAL (%x): Stack dealloc does not match alloc??\n' % ins.ea
                 return
 
@@ -66,15 +69,15 @@ def parse_function(binrepr, funcaddr):
             if variables.stack_size == 0:
                 if binrepr.verbose > 0: print '\tFunction does not appear to have a stack frame (1)\n'
                 return
-            offset = binrepr.ida.idc.GetSpd(ins.ea) + typ[1] + variables.stack_size + size_offset if size_offset is not None else 0
-            if offset < 0:
+            offset = binrepr.ida.idc.GetSpd(ins.ea) + variables.stack_size + size_offset if size_offset is not None else 0
+            if offset + typ[1].value < 0:
                 if binrepr.verbose > 0: print '\t*** Warning (%x): Function appears ' + \
                         'to be accessing above its stack frame, discarding instruction' % ins.ea
                 continue
-            if offset > variables.stack_size:
-                continue        # this is one of the fuction's arguments
-            # Do not filter out arg setups here because those will need to be adjusted
-            Access(ins.ea, typ[2], False, typ[1], typ[1] - offset, binrepr, variables)
+            if offset + typ[1].value > variables.stack_size:
+                continue        # this is one of the function's arguments
+            # Do not filter out args to the next function here because we need to have everythign first
+            Access(typ[1], False, offset, binrepr, variables)
 
         elif typ[0] == 'STACK_BP_ACCESS':
             if variables.stack_size == 0:
@@ -82,9 +85,9 @@ def parse_function(binrepr, funcaddr):
                 return
             if not bp_based:
                 continue        # silently ignore bp access in sp frame
-            if typ[1] > 0:
+            if typ[1].value > 0:
                 continue        # this is one of the function's arguments
-            Access(ins.ea, typ[2], True, typ[1], variables.stack_size + bp_offset, binrepr, variables)
+            Access(typ[1], True, variables.stack_size + bp_offset, binrepr, variables)
 
         else:
             print '\t*** CRITICAL: You forgot to update parse_function(), jerkface!\n'
@@ -95,7 +98,6 @@ def parse_function(binrepr, funcaddr):
     
 # Find the lowest sp-access that isn't an argument to the next function
 # By starting at accesses to [esp] and stepping up a word at a time
-
     if binrepr.is_convention_stack_args():
         wordsize = executable.word_size[binrepr.native_dtyp]
         i = 0
@@ -131,16 +133,17 @@ def parse_function(binrepr, funcaddr):
     print
 
 class Access():
-    def __init__(self, ea, opn, bp, value, offset, binrepr, varlist):
-        self.ea = ea
-        self.opn = opn
+    def __init__(self, bindata, bp, offset, binrepr, varlist):
+        self.bindata = bindata
+        self.ea = bindata.memaddr
+        self.opn = bindata.opn
         self.bp = bp
-        self.value = value
+        self.value = bindata.value
         self.offset_inherant = offset
         self.binrepr = binrepr
         self.varlist = varlist
 
-        self.access_flags = binrepr.get_access_flags(ea, opn)   # get access flags
+        self.access_flags = binrepr.get_access_flags(self.ea, self.opn)   # get access flags
         Variable(varlist, self)                                 # make a variable or add it to an existing one
         self.variable = varlist[self.address()]                 # get reference to variable
         self.offset_variable = 0
