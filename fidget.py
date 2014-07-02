@@ -142,9 +142,9 @@ def parse_function(binrepr, funcaddr):
     symrepr.add(sym_stack_size >= variables.stack_size)
     symrepr.add(sym_stack_size <= variables.stack_size + (16 * len(variables) + 32))
     
-    asum = sum(map(lambda x: ZExtTo(64, x.symval), alloc_ops))
+    asum = sum(map(lambda x: SExtTo(64, x.symval), alloc_ops))
     asum = alloc_ops[0].symval
-    symrepr.add(ZExtTo(64, asum) == sym_stack_size)
+    symrepr.add(SExtTo(64, asum) == sym_stack_size)
     for op in dealloc_ops:
         symrepr.add(ZExtTo(64, op.symval) == sym_stack_size)
 
@@ -207,12 +207,17 @@ class Access():
         return self.offset_inherant + self.value + (self.varlist.stack_size if self.bp else 0)
 
     def sym_link(self):
-        self.value = SExtTo(64, self.bindata.symval) if self.bindata.signed else ZExtTo(64, self.bindata.symval)
-        self.binrepr.symrepr.add(self.address() - self.offset_variable == self.variable.address)
+        if self.bindata.value == 0: # [rsp]
+            self.binrepr.symrepr.add(self.variable.address == 0)
+        else:
+            self.value = SExtTo(64, self.bindata.symval) if self.bindata.signed else ZExtTo(64, self.bindata.symval)
+            self.binrepr.symrepr.add(self.address() - self.offset_variable == self.variable.address)
 
     def get_patches(self):
-        self.bindata.gotime = True
-        return [self.bindata.get_patch_data()]
+        if self.bindata.value != 0:
+            self.bindata.gotime = True
+            return [self.bindata.get_patch_data()]
+        else: return []
 
 class Variable():
     def __init__(self, varlist, access):

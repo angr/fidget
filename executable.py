@@ -300,6 +300,7 @@ class BinaryData():         # The fundemental link between binary data and thing
             self.signed = True
             if s[0] in ('add', 'sub') and op.type != 4:
                 self.signed = False
+            self.signed = True  # god damn it, intel!
 
             self.symval = symexec.BitVec(hex(memaddr)[2:] + '_' + str(opn), self.bit_length)
             rng = self.get_range()

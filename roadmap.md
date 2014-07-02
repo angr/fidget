@@ -1,3 +1,6 @@
+HAHAHA IT'S WORKING
+===================
+
 This should be the program's processing checklist:
 
 - [x] Load file via idalink, pyelftools - verify it's an ELF (for now)
@@ -6,9 +9,9 @@ This should be the program's processing checklist:
 - [X] Figure out what kind of stack frame is used in each function
 - [X] Find all references to stack memory (ebp-stuff, esp+stuff on calling conventions w/ args in registers)
 - [X] Figure out which references are actually offsets into variables - i.e. find variables
-- [ ] Find limitations on how far things can be moved
-- [ ] Resize stack frame - add CONST_OFFSET + num_vars * CONST_SPACING bytes of size
-- [ ] Relocate variables - move each up by CONST_OFFSET + num_vars_below * CONST_SPACING
+- [X] Find limitations on how far things can be moved
+- [X] Resize stack frame - add CONST_OFFSET + num_vars * CONST_SPACING bytes of size
+- [X] Relocate variables - move each up by CONST_OFFSET + num_vars_below * CONST_SPACING
 
 There needs to be a good way to create a nice bridge between the values 
 reported by IDA and the actual bits, so here's my checklist for how to do that:
@@ -19,7 +22,7 @@ reported by IDA and the actual bits, so here's my checklist for how to do that:
 - [X] Iterate through the bits (only word-aligned?) and check if the value you're searching for is present
 - [X] If it is, sanity check by changing it (via ida's binary patching stuffs), reading off the instruction string from ida again, and making sure that the only change in the string is exactly what you meant to change
 - [X] Generate patch data for arbitrary value changes
-- [ ] Generate constraints for acceptable values (bit width, bit shift)
+- [X] Generate constraints for acceptable values (bit width, bit shift)
 
 The idaPy docs suuuuuck (protip: read the source), so here's my notes on it:
 
