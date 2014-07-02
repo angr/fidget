@@ -112,14 +112,14 @@ class _Executable():
                     continue
                 return ('STACK_SP_ACCESS', BinaryData(ins.ea, opn.n, None, s, self))
             if opn.type != 4: continue
-            if opn.has_reg(self.get_sp()):
+            if self.get_sp() in s[opn.n+1]:
                 #sanity check first
-                if not self.sanity_check(ins.ea, opn):
-                    continue
+                #if not self.sanity_check(ins.ea, opn):
+                #    continue
                 return ('STACK_SP_ACCESS', BinaryData(ins.ea, opn.n, resign_int(opn.addr, self.native_dtyp), s, self))
-            elif opn.has_reg(self.get_bp()):
-                if not self.sanity_check(ins.ea, opn):
-                    continue
+            elif self.get_bp() in s[opn.n+1]:
+                #if not self.sanity_check(ins.ea, opn):
+                #    continue
                 return ('STACK_BP_ACCESS', BinaryData(ins.ea, opn.n, resign_int(opn.addr, self.native_dtyp), s, self))
         return ('', 0)
 
@@ -165,27 +165,11 @@ class _Executable():
         armregs = ['R0', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9', 'R10', 'R11', 'R12', 'SP', 'LR']
         return prefix + [x86regs, x86regs, armregs][self.processor][reg] + suffix
 
-    def get_sp(self, constant=False):
-        if not constant:
-            if self.processor == 0 or self.processor == 1 or self.processor == 2:
-                return self.ida.idautils.procregs.sp
-        else:
-            if self.processor == 0 or self.processor == 1:
-                return 4
-            elif self.processor == 2:
-                return 13
+    def get_sp(self):
+        return ['esp','rsp','SP'][self.processor]
 
-    def get_bp(self, constant=False):
-        if not constant:
-            if self.processor == 0 or self.processor == 1:
-                return self.ida.idautils.procregs.bp
-            elif self.processor == 2:
-                return self.ida.idautils.procregs.r11
-        else:
-            if self.processor == 0 or self.processor == 1:
-                return 5
-            elif self.processor == 2:
-                return 11
+    def get_bp(self):
+        return ['ebp','rbp','R11'][self.processor]
 
     def sanity_check(self, ea, op):
         self.ida.idc.OpDecimal(ea, op.n)
