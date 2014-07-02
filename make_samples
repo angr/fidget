@@ -1,0 +1,12 @@
+#!/bin/bash
+
+set -x
+
+cd samplebins
+wget http://shell-storm.org/repo/CTF/Defcon-21-quals/bitterswallow/bs -O ctf_arm
+wget http://andrewdutcher.com/helium/codegatej-14-binaries/nuclear/nuclear -O ctf_x86
+gcc test_arrays.c -o test_arrays_native
+gcc test_arrays.c -m32 -o test_arrays_native32 2> /dev/null
+
+# if the latter compiled but they're the exact same, remove the latter
+[ -f test_arrays_native32 ] && [ -f test_arrays_native ] && diff test_arrays_native32 test_arrays_native >/dev/null && rm test_arrays_native32
