@@ -2,6 +2,7 @@
 
 import sys, os
 import executable
+from patch import binary_patch
 import bisect
 import symexec
 
@@ -12,11 +13,17 @@ def main(filename, options):
         print '*** CRITICAL: Not an executable'
         return
     binrepr.verbose = options["verbose"]
+    binrepr.safe = options["safe"]
     textsec = binrepr.get_section_by_name('.text')
     textrange = (textsec.header.sh_addr, textsec.header.sh_addr + textsec.header.sh_size)
     textfuncs = binrepr.ida.idautils.Functions(*textrange)
+    patch_data = []
     for func in textfuncs:
-        parse_function(binrepr, func)
+        patch_data += parse_function(binrepr, func)
+
+    if binrepr.verbose > 0:
+        print 'Accumulated %d patches, %d bytes of data' % (len(patch_data), sum(map(lambda x: len(x[1]), patch_data)))
+    binary_patch(filename, patch_data, options['outfile'])
 
     try:
         binrepr.ida.close()   # I added a close() function to my local version of idalink so it'll close the databases properly
@@ -53,7 +60,7 @@ def parse_function(binrepr, funcaddr):
         elif typ[0] == 'STACK_FRAME_ALLOC':
             if len(variables) > 0: # allow multiple allocs because ARM has limited immediates
                 print '\t*** CRITICAL (%x): Stack alloc after stack access\n' % ins.ea
-                return
+                return []
             if len(alloc_ops) == 0:
                 size_offset = -binrepr.ida.idc.GetSpd(ins.ea)
             alloc_ops.append(typ[1])
@@ -63,12 +70,12 @@ def parse_function(binrepr, funcaddr):
             dealloc_ops.append(typ[1])
             if typ[1].value != variables.stack_size:  # I don't think there are manual deallocs on ARM!
                 print '\t*** CRITICAL (%x): Stack dealloc does not match alloc??\n' % ins.ea
-                return
+                return []
 
         elif typ[0] == 'STACK_SP_ACCESS':
             if variables.stack_size == 0:
                 if binrepr.verbose > 0: print '\tFunction does not appear to have a stack frame (1)\n'
-                return
+                return []
             offset = binrepr.ida.idc.GetSpd(ins.ea) + variables.stack_size + size_offset if size_offset is not None else 0
             if offset + typ[1].value < 0:
                 if binrepr.verbose > 0: print '\t*** Warning (%x): Function appears ' + \
@@ -82,19 +89,19 @@ def parse_function(binrepr, funcaddr):
         elif typ[0] == 'STACK_BP_ACCESS':
             if variables.stack_size == 0:
                 if binrepr.verbose > 0: print '\tFunction does not appear to have a stack frame (2)\n'
-                return
+                return []
             if not bp_based:
                 continue        # silently ignore bp access in sp frame
             if typ[1].value > 0:
                 continue        # this is one of the function's arguments
-            Access(typ[1], True, variables.stack_size + bp_offset, binrepr, variables)
+            Access(typ[1], True, bp_offset, binrepr, variables)
 
         else:
             print '\t*** CRITICAL: You forgot to update parse_function(), jerkface!\n'
 
     if len(alloc_ops) == 0:
         if binrepr.verbose > 0: print '\tFunction does not appear to have a stack frame (3)\n'
-        return
+        return []
     
 # Find the lowest sp-access that isn't an argument to the next function
 # By starting at accesses to [esp] and stepping up a word at a time
@@ -126,11 +133,59 @@ def parse_function(binrepr, funcaddr):
     else:
         if binrepr.verbose > 0:
             print '\tFunction has a %d-byte stack frame, but doesn\'t use it for local vars\n' % variables.stack_size
-        return
+        return []
 
     variables.collapse()
+    variables.mark_sizes()
+
+    sym_stack_size = symexec.BitVec("stack_size", 64)
+    symrepr.add(sym_stack_size >= variables.stack_size)
+    symrepr.add(sym_stack_size <= variables.stack_size + (16 * len(variables) + 32))
+    
+    asum = sum(map(lambda x: ZExtTo(64, x.symval), alloc_ops))
+    asum = alloc_ops[0].symval
+    symrepr.add(ZExtTo(64, asum) == sym_stack_size)
+    for op in dealloc_ops:
+        symrepr.add(ZExtTo(64, op.symval) == sym_stack_size)
+
+    old_size = variables.stack_size
+    variables.stack_size = sym_stack_size
+    variables.sym_link()
+
+    # OKAY HERE WE GO
+    if binrepr.verbose > 1:
+        print '\nConstraints:'
+        columnize(str(x) for x in symrepr.constraints)
+        print
+
+    if binrepr.verbose > 0:
+        print '\tResized stack from', old_size, 'to', symrepr.eval(variables.stack_size)
+
+    if binrepr.verbose > 1:
+        for addr in variables.addr_list:
+            print 'moved', addr, 'size', variables.variables[addr].size, 'to', symrepr.eval(variables.variables[addr].address)
 
     print
+    out = []
+    for alloc in alloc_ops:
+        alloc.gotime = True
+        out += [alloc.get_patch_data()]
+    for dealloc in dealloc_ops:
+        dealloc.gotime = True
+        out += [dealloc.get_patch_data()]
+    out += variables.get_patches()
+    return out
+
+def ZExtTo(size, vec):
+    return symexec.ZeroExt(size - vec.size(), vec)
+
+def SExtTo(size, vec):
+    return symexec.SignExt(size - vec.size(), vec)
+
+def columnize(data):
+    open('.coldat','w').write('\n'.join(data))
+    _, columns = os.popen('stty size').read().split()
+    os.system('column -c %d < .coldat 2>/dev/null' % int(columns))
 
 class Access():
     def __init__(self, bindata, bp, offset, binrepr, varlist):
@@ -149,7 +204,15 @@ class Access():
         self.offset_variable = 0
 
     def address(self):
-        return self.offset_inherant + self.value
+        return self.offset_inherant + self.value + (self.varlist.stack_size if self.bp else 0)
+
+    def sym_link(self):
+        self.value = SExtTo(64, self.bindata.symval) if self.bindata.signed else ZExtTo(64, self.bindata.symval)
+        self.binrepr.symrepr.add(self.address() - self.offset_variable == self.variable.address)
+
+    def get_patches(self):
+        self.bindata.gotime = True
+        return [self.bindata.get_patch_data()]
 
 class Variable():
     def __init__(self, varlist, access):
@@ -178,7 +241,25 @@ class Variable():
         for access in child.accesses:
             access.offset_variable = access.address() - self.address
             self.accesses.append(access)
+            access.variable = self
 
+    def sym_link(self):
+        self.address = symexec.BitVec('var_%x'%self.address, 64)
+        for access in self.accesses: access.sym_link()
+        self.varlist.binrepr.symrepr.add(self.address % self.varlist.binrepr.native_word == 0)
+        if self.next is None:
+            self.varlist.binrepr.symrepr.add(symexec.ULE(self.address + self.size, self.varlist.stack_size))
+        else:
+            self.next.sym_link()
+            if self.varlist.binrepr.safe:
+                self.varlist.binrepr.symrepr.add(self.address + self.size == self.next.address)
+            else:
+                self.varlist.binrepr.symrepr.add(self.address + self.size <= self.next.address)
+
+    def get_patches(self):
+        out = []
+        for access in self.accesses: out += access.get_patches()
+        return out
 
 class VarList():
     def __init__(self, binrepr, stack_size):
@@ -209,6 +290,12 @@ class VarList():
 
     def get_all_vars(self):
         return map(lambda x: self.variables[x], self.addr_list)
+
+    def sym_link(self):
+        first = self.variables[self.addr_list[0]]
+        old_start = first.address
+        first.sym_link()        # yaaay recursion and list linkage!
+        self.binrepr.symrepr.add(first.address >= old_start)
 
     def collapse(self):
         i = 0               # old fashioned loop because we're removing items
@@ -244,11 +331,26 @@ class VarList():
         if self.binrepr.verbose > 1:
             print '\tMerged %d down to %d' % (child.address, parent.address)
 
+    def get_patches(self):
+        out = []
+        for var in self.get_all_vars(): out += var.get_patches()
+        return out
+
     def __str__(self):
         return '\n'.join(str(x) for x in self.vars)
 
     def __repr__(self):
         return str(self)
+
+    def mark_sizes(self):
+        for i, addr in enumerate(self.addr_list[:-1]):
+            var = self.variables[addr]
+            var.next = self.variables[self.addr_list[i+1]]
+            var.size = var.next.address - var.address
+        var = self.variables[self.addr_list[-1]]
+        var.next = None
+        var.size = self.stack_size - var.address
+
 
 def addopt(options, option):
     if option in ('v', 'verbose'):
@@ -260,9 +362,11 @@ def addopt(options, option):
         os.exit(0)
     elif option in ('safe'):
         options['safe'] = True
+    elif option in ('o', 'output'):
+        options['outfile'] = next(sys.argv)
     else:
         print 'Bad argument: %s' % option
-        os.exit(1)
+        sys.exit(1)
 
 def usage():
     print """Fidget: The Binary Tweaker
@@ -273,6 +377,7 @@ Options:
     -h, --help              View this usage information and exit
     -v, --verbose           More output
     -q, --quiet             Less output
+    -o, --output [file]     Output patched binary to file (default <input>.patched)
     --safe                  Make conservative modifications
 """ % sys.argv[0]
 
@@ -280,17 +385,19 @@ if __name__ == '__main__':
     if len(sys.argv) < 2:
         usage()
     else:
-        options = {"verbose": 0, "safe": False}
+        options = {"verbose": 0, "safe": False, "outfile": None}
         filenames = []
-        for arg in sys.argv[1:]:
+        sys.argv = iter(sys.argv)
+        next(sys.argv)
+        for arg in sys.argv:
             if arg.startswith('--'):
-                addopt(options, arg[:2])
+                addopt(options, arg[2:])
             elif arg.startswith('-'):
                 for flag in arg[1:]: addopt(options, flag)
             else:
                 filenames.append(arg)
         if len(filenames) == 0:
             print 'You must specify a file to operate on!'
-            os.exit(1)
+            sys.exit(1)
         for filename in filenames:
             main(filename, options)

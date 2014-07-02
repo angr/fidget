@@ -238,6 +238,7 @@ class ElfExecutable(_Executable):
             self.error = True
             return
         self.native_dtyp = 7 if self.is_64_bit() else 2
+        self.native_word = 8 if self.is_64_bit() else 4
         elfproc = self.elfreader.header.e_machine
         if elfproc == 'EM_386':
             self.processor = 0
@@ -285,7 +286,11 @@ class BinaryData():         # The fundemental link between binary data and thing
         self.s = s
 
         self.physaddr = binrepr.ida.idaapi.get_fileregion_offset(memaddr)
-        self.inslen = binrepr.ida.idautils.DecodeInstruction(memaddr).size
+        ins = binrepr.ida.idautils.DecodeInstruction(memaddr)
+        op = ins.Operands[opn]
+        self.inslen = ins.size
+
+        self.gotime = False
 
         binrepr.filestream.seek(self.physaddr)
         self.insbytes = binrepr.filestream.read(self.inslen)
@@ -293,12 +298,18 @@ class BinaryData():         # The fundemental link between binary data and thing
         if value is not None:
             self.search_value()
             self.signed = True
-            if s[0] in ('add', 'sub'):
+            if s[0] in ('add', 'sub') and op.type != 4:
                 self.signed = False
 
-            self.symval = symexec.BitVec(hex(memaddr) + '_' + str(opn), self.bit_length + (1 if self.signed else 0))
-            if self.signed: binrepr.symrepr.add(self.symval >= 0)
-            if self.bit_shift != 1: binrepr.symrepr.add(self.symval % (1 << self.bit_shift) == 0)
+            self.symval = symexec.BitVec(hex(memaddr)[2:] + '_' + str(opn), self.bit_length)
+            rng = self.get_range()
+            if self.signed:
+                binrepr.symrepr.add(self.symval >= rng[0])
+                binrepr.symrepr.add(self.symval <= rng[1] - 1)
+            else:
+                binrepr.symrepr.add(symexec.UGE(self.symval, rng[0]))
+                binrepr.symrepr.add(symexec.ULE(self.symval, rng[1] - 1))
+            if self.bit_shift > 0: binrepr.symrepr.add(self.symval % (1 << self.bit_shift) == 0)
         else:
             self.value = 0
 
@@ -327,7 +338,8 @@ class BinaryData():         # The fundemental link between binary data and thing
                 raise Exception('*** CRITICAL (%x): Absolutely could not find value %d' % (self.memaddr, self.value))
 
     def set_uvalue(self):
-        self.uvalue = self.value if self.value >= 0 else 1 + (-self.value ^ ((1 << self.bit_length) - 1))
+        if self.gotime: self.uvalue = self.binrepr.symrepr.eval(self.symval).as_long()
+        else: self.uvalue = self.value if self.value >= 0 else 1 + (-self.value ^ ((1 << self.bit_length) - 1))
 
     def sanity_check(self):
         if self.binrepr.verbose > 1: print '\tsanity checking for operand', self.opn
