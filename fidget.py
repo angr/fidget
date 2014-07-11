@@ -169,10 +169,10 @@ def parse_function(binrepr, funcaddr):
     out = []
     for alloc in alloc_ops:
         alloc.gotime = True
-        out += [alloc.get_patch_data()]
+        out += alloc.get_patch_data()
     for dealloc in dealloc_ops:
         dealloc.gotime = True
-        out += [dealloc.get_patch_data()]
+        out += dealloc.get_patch_data()
     out += variables.get_patches()
     return out
 
@@ -190,15 +190,14 @@ def columnize(data):
 class Access():
     def __init__(self, bindata, bp, offset, binrepr, varlist):
         self.bindata = bindata
-        self.ea = bindata.memaddr
-        self.opn = bindata.opn
         self.bp = bp
         self.value = bindata.value
         self.offset_inherant = offset
         self.binrepr = binrepr
+        self.symrepr = binrepr.symrepr
         self.varlist = varlist
 
-        self.access_flags = binrepr.get_access_flags(self.ea, self.opn)   # get access flags
+        self.access_flags = bindata.access_flags   # get access flags
         Variable(varlist, self)                                 # make a variable or add it to an existing one
         self.variable = varlist[self.address()]                 # get reference to variable
         self.offset_variable = 0
@@ -208,15 +207,15 @@ class Access():
 
     def sym_link(self):
         if self.bindata.value == 0: # [rsp]
-            self.binrepr.symrepr.add(self.variable.address == 0)
+            self.symrepr.add(self.variable.address == 0)
         else:
             self.value = SExtTo(64, self.bindata.symval) if self.bindata.signed else ZExtTo(64, self.bindata.symval)
-            self.binrepr.symrepr.add(self.address() - self.offset_variable == self.variable.address)
+            self.symrepr.add(self.address() - self.offset_variable == self.variable.address)
 
     def get_patches(self):
         if self.bindata.value != 0:
             self.bindata.gotime = True
-            return [self.bindata.get_patch_data()]
+            return self.bindata.get_patch_data()
         else: return []
 
 class Variable():
@@ -251,7 +250,7 @@ class Variable():
     def sym_link(self):
         self.address = symexec.BitVec('var_%x'%self.address, 64)
         for access in self.accesses: access.sym_link()
-        self.varlist.binrepr.symrepr.add(self.address % self.varlist.binrepr.native_word == 0)
+        self.varlist.binrepr.symrepr.add(self.address % (self.varlist.binrepr.native_word/8) == 0)
         if self.next is None:
             self.varlist.binrepr.symrepr.add(symexec.ULE(self.address + self.size, self.varlist.stack_size))
         else:
@@ -262,9 +261,7 @@ class Variable():
                 self.varlist.binrepr.symrepr.add(self.address + self.size <= self.next.address)
 
     def get_patches(self):
-        out = []
-        for access in self.accesses: out += access.get_patches()
-        return out
+        return sum((access.get_patches() for access in self.accesses), [])
 
 class VarList():
     def __init__(self, binrepr, stack_size):
@@ -337,9 +334,7 @@ class VarList():
             print '\tMerged %d down to %d' % (child.address, parent.address)
 
     def get_patches(self):
-        out = []
-        for var in self.get_all_vars(): out += var.get_patches()
-        return out
+        return sum((var.get_patches() for var in self.get_all_vars()), [])
 
     def __str__(self):
         return '\n'.join(str(x) for x in self.vars)

@@ -3,21 +3,20 @@ HAHAHA IT'S WORKING
 
 This should be the program's processing checklist:
 
-- [x] Load file via idalink, pyelftools - verify it's an ELF (for now)
-- [x] Find the .text section - use pyelftools
-- [x] Find all the functions in .text - use idalink
+- [X] Load file via idalink, pyelftools - verify it's an ELF (for now)
+- [X] Find the .text section - use pyelftools
+- [X] Find all the functions in .text - use idalink
 - [X] Figure out what kind of stack frame is used in each function
 - [X] Find all references to stack memory (ebp-stuff, esp+stuff on calling conventions w/ args in registers)
 - [X] Figure out which references are actually offsets into variables - i.e. find variables
-- [X] Find limitations on how far things can be moved
-- [X] Resize stack frame - add CONST_OFFSET + num_vars * CONST_SPACING bytes of size
-- [X] Relocate variables - move each up by CONST_OFFSET + num_vars_below * CONST_SPACING
+- [X] Find limitations on how far things can be moved, assign symbolic constraints
+- [X] Let the symbolic analysis engine pick new values for the 
 
 There needs to be a good way to create a nice bridge between the values 
 reported by IDA and the actual bits, so here's my checklist for how to do that:
 
 - [X] Everything happens in this BinaryData class, in executable.py
-- [ ] If we're ARM, fuck everything (special case)
+- [X] If we're ARM, fuck everything (special case)
 - [X] Otherwise, start at the longest word size and iterate down to the smaller ones when you run out of room
 - [X] Iterate through the bits (only word-aligned?) and check if the value you're searching for is present
 - [X] If it is, sanity check by changing it (via ida's binary patching stuffs), reading off the instruction string from ida again, and making sure that the only change in the string is exactly what you meant to change

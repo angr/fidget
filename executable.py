@@ -13,17 +13,8 @@ processors = ['i386', 'x86_64', 'arm', 'ppc', 'mips']
 word_size = {0: 1, 1: 2, 2: 4, 7: 8}
 dtyp_by_width = {8: 0, 16: 1, 32: 2, 64: 7}
 
-def resign_int(n, dtyp):
-    if (dtyp == 0): # 8 bit
-        top = 0xFF
-    elif (dtyp == 1): # 16 bit
-        top = 0xFFFF
-    elif (dtyp == 2): # 32 bit
-        top = 0xFFFFFFFF
-    elif (dtyp == 7): # 64 bit
-        top = 0xFFFFFFFFFFFFFFFF
-    else:
-        return None
+def resign_int(n, word):
+    top = (1 << word) - 1
     if (n > top):
         return None
     if (n < top/2): # woo int division
@@ -89,11 +80,12 @@ class _Executable():
                 BinaryData(ins.ea, 1 if self.processor < 2 else 2, \
                   ins.Op2.value if self.processor < 2 else ins.Op3.value, s, self))
         if self.identify_bp_pointer(s):
-            raise Exception('*** CRITICAL: Complex pointers not supported yet with BinaryData')
             reladdr = ins.Op3.value * (-1 if s[0].lower() == 'sub' else 1)
             n_ea = ins.ea
-            if self.verbose > 1:
-                print '\t* Found complex pointer'
+            accumulator = BinaryDataConglomerate('complex_' + hex(n_ea)[2:], BinaryData(n_ea, 2, True, s, self))
+            if s[0].lower() == 'sub':
+                accumulator.value = -accumulator.value
+                accumulator.symval = -accumulator.symval
             while True:
                 n_ea = self.ida.idc.NextHead(n_ea)
                 n_mnem = self.ida.idc.GetMnem(n_ea).lower()
@@ -103,8 +95,16 @@ class _Executable():
                 if self.verbose > 1:
                     print '\t* Expanding complex pointer'
                 s[1] = self.ida.idc.GetOpnd(n_ea, 0)
-                reladdr += self.ida.idc.GetOperandValue(n_ea, 2) * (-1 if n_mnem == 'sub' else 1)
-            return ('STACK_BP_ACCESS', reladdr, 1)
+                v = self.ida.idc.GetOperandValue(n_ea, 2)
+                b = BinaryData(n_ea, 2, v, s, self) # FIXME: Send the actual right s value
+                accumulator.add(b)
+                if n_mnem == 'sub':
+                    accumulator.value -= v
+                    accumulator.symval -= b.symval
+                else:
+                    accumulator.value += v
+                    accumulator.symval += b.symval
+            return ('STACK_BP_ACCESS', accumulator)
         for opn in ins.Operands:
             if opn.type == 0: break
             if opn.type == 3 and opn.has_reg(self.ida.idautils.procregs.sp):
@@ -116,11 +116,11 @@ class _Executable():
                 #sanity check first
                 #if not self.sanity_check(ins.ea, opn):
                 #    continue
-                return ('STACK_SP_ACCESS', BinaryData(ins.ea, opn.n, resign_int(opn.addr, self.native_dtyp), s, self))
+                return ('STACK_SP_ACCESS', BinaryData(ins.ea, opn.n, resign_int(opn.addr, self.native_word), s, self))
             elif self.get_bp() in s[opn.n+1]:
                 #if not self.sanity_check(ins.ea, opn):
                 #    continue
-                return ('STACK_BP_ACCESS', BinaryData(ins.ea, opn.n, resign_int(opn.addr, self.native_dtyp), s, self))
+                return ('STACK_BP_ACCESS', BinaryData(ins.ea, opn.n, resign_int(opn.addr, self.native_word), s, self))
         return ('', 0)
 
     def identify_bp_assignment(self, s):
@@ -146,13 +146,13 @@ class _Executable():
             return '[%s]' % self.construct_register(op.reg, op.dtyp)
         if op.type == 4:
             addr = resign_int(op.addr, self.native_dtyp)
-            return '[%s%+d]' % (self.construct_register(op.reg, self.native_dtyp), addr)
+            return '[%s%+d]' % (self.construct_register(op.reg, self.native_word), addr)
 
     def construct_operand_arm(self, op):
         if op.type == 4:
             addr = resign_int(op.addr, self.native_dtyp)
             if addr == 0: return '[%s]' % self.construct_register(op.reg, self.native_dtyp)
-            return '[%s,#%d]' % (self.construct_register(op.reg, self.native_dtyp), addr)
+            return '[%s,#%d]' % (self.construct_register(op.reg, self.native_word), addr)
         
     def construct_register(self, reg, dtyp):
         if self.processor == 0 or self.processor == 1:
@@ -222,7 +222,7 @@ class ElfExecutable(_Executable):
             self.error = True
             return
         self.native_dtyp = 7 if self.is_64_bit() else 2
-        self.native_word = 8 if self.is_64_bit() else 4
+        self.native_word = 64 if self.is_64_bit() else 32
         elfproc = self.elfreader.header.e_machine
         if elfproc == 'EM_386':
             self.processor = 0
@@ -266,6 +266,7 @@ class BinaryData():         # The fundemental link between binary data and thing
         self.value = value
         self.ovalue = value
         self.binrepr = binrepr
+        self.symrepr = binrepr.symrepr
         self.opn = opn
         self.s = s
 
@@ -274,34 +275,90 @@ class BinaryData():         # The fundemental link between binary data and thing
         op = ins.Operands[opn]
         self.inslen = ins.size
 
+        self.access_flags = binrepr.get_access_flags(memaddr, opn)
+
         self.gotime = False
+        self.symval = None
 
         binrepr.filestream.seek(self.physaddr)
         self.insbytes = binrepr.filestream.read(self.inslen)
 
         if value is not None:
+            if value is True:
+                self.value = binrepr.ida.idc.GetOperandValue(self.memaddr, self.opn)
             self.search_value()
-            self.signed = True
-            if s[0] in ('add', 'sub') and op.type != 4:
-                self.signed = False
             self.signed = True  # god damn it, intel!
 
-            self.symval = symexec.BitVec(hex(memaddr)[2:] + '_' + str(opn), self.bit_length)
-            rng = self.get_range()
-            if self.signed:
+            if self.symval is None:     # allow search_value to set the symvalues if it really wants to
+                self.symval = symexec.BitVec(hex(memaddr)[2:] + '_' + str(opn), self.bit_length)
+                rng = self.get_range()
                 binrepr.symrepr.add(self.symval >= rng[0])
                 binrepr.symrepr.add(self.symval <= rng[1] - 1)
-            else:
-                binrepr.symrepr.add(symexec.UGE(self.symval, rng[0]))
-                binrepr.symrepr.add(symexec.ULE(self.symval, rng[1] - 1))
-            if self.bit_shift > 0: binrepr.symrepr.add(self.symval % (1 << self.bit_shift) == 0)
         else:
             self.value = 0
 
     def search_value(self):
         if self.binrepr.processor == 2:
-            pass #fuck everything
+            self.armins = struct.unpack('I', self.insbytes)[0]
+            if self.armins & 0x0C000000 == 0x04000000:
+                # LDR
+                self.armop = 1
+                thoughtval = self.armins & 0xFFF
+                thoughtval *= 1 if self.armins & 0x00800000 else -1
+                if thoughtval != self.value:
+                    print 'case 1'
+                    print hex(thoughtval), hex(self.value), hex(self.armins)
+                    raise Exception("(%x) Either IDA or I really don't understand this instruction!" % self.memaddr)
+                self.bit_shift = 0
+                self.bit_length = 32
+            elif self.armins & 0x0E000000 == 0x02000000:
+                # Data processing w/ immediate
+                self.armop = 2
+                shiftval = ((self.armins & 0xF00) >> 7)
+                thoughtval = self.armins & 0xFF
+                thoughtval = (thoughtval >> shiftval) | (thoughtval << (32 - shiftval))
+                thoughtval &= 0xFFFFFFFF
+                if thoughtval != self.value:
+                    print 'case 2'
+                    print hex(thoughtval), hex(self.value), hex(self.armins)
+                    raise Exception("(%x) Either IDA or I really don't understand this instruction!" % self.memaddr)
+                self.bit_shift = symexec.BitVec(hex(self.memaddr)[2:] + '_shift', 4)
+                self.symval = symexec.BitVec(hex(self.memaddr)[2:] + '_imm', 32)
+                self.symval8 = symexec.BitVec(hex(self.memaddr)[2:] + '_imm8', 8)
+                self.symrepr.add(self.symval == symexec.RotateRight(symexec.ZeroExt(32-8, self.symval8), symexec.ZeroExt(32-4, self.bit_shift)*2))
+                self.bit_length = 32
+            elif self.armins & 0x0E400090 == 0x00400090:
+                # LDRH
+                self.armop = 3
+                thoughtval = (self.armins & 0xF) | ((self.armins & 0xF00) >> 4)
+                thoughtval *= 1 if self.armins & 0x00800000 else -1
+                if thoughtval != self.value:
+                    print 'case 3'
+                    print hex(thoughtval), hex(self.value), hex(self.armins)
+                    raise Exception("(%x) Either IDA or I really don't understand this instruction!" % self.memaddr)
+                self.bit_shift = 0
+                self.bit_length = 32
+            elif self.armins & 0x0E000000 == 0x0C000000:
+                # Coprocessor data transfer
+                # i.e. FLD/FST
+                self.armop = 4
+                thoughtval = self.armins & 0xFF
+                thoughtval *= 4 if self.armins & 0x00800000 else -4
+                if thoughtval != self.value:
+                    print 'case 4'
+                    print hex(thoughtval), hex(self.value), hex(self.armins)
+                    raise Exception("(%x) Either IDA or I really don't understand this instruction!" % self.memaddr)
+                self.bit_shift = 0
+                self.bit_length = 32
+                self.symval = symexec.BitVec(hex(self.memaddr)[2:] + '_' + str(self.opn), self.bit_length)
+                rng = self.get_range()
+                self.symrepr.add(self.symval >= rng[0])
+                self.symrepr.add(self.symval <= rng[1] - 1)
+                self.symrepr.add(self.symval % 4 == 0)
+            else:
+                raise Exception("(%x) Unsupported ARM instruction!" % self.memaddr)
         else:
+            self.armop = 0
             self.bit_shift = 0
             found = False
             for word_size in (64, 32, 16, 8):
@@ -385,7 +442,41 @@ class BinaryData():         # The fundemental link between binary data and thing
             raise Exception("Unaligned writes unimplemented")
 
     def get_patch_data(self):
-        if self.bit_offset % 8 == 0 and self.bit_length % 8 == 0:
+        if self.armop == 1:
+            newval = self.armins & 0xFF7FF000
+            newimm = self.symrepr.eval(self.symval).as_long()
+            newimm = resign_int(newimm, 32)
+            if newimm > 0:
+                newval |= 0x00800000
+            newval |= abs(newimm)
+            return [(self.physaddr, struct.pack('I', newval))]
+        elif self.armop == 2:
+            newval = self.armins & 0xFFFFF000
+            newimm = self.symrepr.eval(self.symval8).as_long()
+            newimm = resign_int(newimm, 32)
+            newshift = self.symrepr.eval(self.bit_shift).as_long()
+            newval |= newshift << 8
+            newval |= newimm
+            return [(self.physaddr, struct.pack('I', newval))]
+        elif self.armop == 3:
+            newval = self.armins & 0xFF7FF0F0
+            newimm = self.symrepr.eval(self.symval).as_long()
+            newimm = resign_int(newimm, 32)
+            if newimm > 0:
+                newval |= 0x00800000
+            newimm = abs(newimm)
+            newval |= newimm & 0xF
+            newval |= (newimm & 0xF0) << 4
+            return [(self.physaddr, struct.pack('I', newval))]
+        elif self.armop == 4:
+            newval = self.armins & 0xFF7FFF00
+            newimm = self.symrepr.eval(self.symval).as_long() / 4
+            newimm = resign_int(newimm, 32)
+            if newimm > 0:
+                newval |= 0x00800000
+            newval |= abs(newimm)
+            return [(self.physaddr, struct.pack('I', newval))]
+        elif self.bit_offset % 8 == 0 and self.bit_length % 8 == 0:
             self.set_uvalue()
             outs = [x for x in self.insbytes]
             ltodo = self.bit_length
@@ -396,7 +487,7 @@ class BinaryData():         # The fundemental link between binary data and thing
                 otodo += 1
                 ltodo -= 8
                 vtodo >>= 8
-            return (self.physaddr, ''.join(outs))
+            return [(self.physaddr, ''.join(outs))]
         else:
             raise Exception("Unaligned writes unimplemented")
 
@@ -413,7 +504,13 @@ class BinaryData():         # The fundemental link between binary data and thing
             ptr += 1
 
     def get_range(self):
-        if self.signed:
+        if self.armop == 1:
+           return (-0xFFF, 0x1000)
+        elif self.armop == 3:
+            return (-0xFF, 0x100)
+        elif self.armop == 4:
+            return (-0x3FF, 0x400)
+        elif self.signed or self.armop == 2:
             half = (1 << self.bit_length) / 2
             return (-half, half, 1 << self.bit_shift)
         else:
@@ -434,3 +531,22 @@ class BinaryData():         # The fundemental link between binary data and thing
     def __str__(self):
         return '%s at $%0.8x' % (self.value, self.memaddr)
 
+class BinaryDataConglomerate:
+    def __init__(self, name, initial):
+        self.binrepr = initial.binrepr
+        self.symrepr = self.binrepr.symrepr
+        self.symval = initial.symval
+        self.dependencies = [initial]
+        self.signed = True
+        self.value = initial.value
+        self.memaddr = initial.memaddr
+        self.access_flags = 4
+
+    def add(self, binrepr):
+        self.dependencies.append(binrepr)
+
+    def get_patch_data(self):
+        return sum((x.get_patch_data() for x in self.dependencies), [])
+
+    def __repr__(self):
+        return 'Conglomeration summing to %d starting at $%x' % (self.value, self.memaddr)
