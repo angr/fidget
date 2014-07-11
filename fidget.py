@@ -141,6 +141,7 @@ def parse_function(binrepr, funcaddr):
     sym_stack_size = symexec.BitVec("stack_size", 64)
     symrepr.add(sym_stack_size >= variables.stack_size)
     symrepr.add(sym_stack_size <= variables.stack_size + (16 * len(variables) + 32))
+    symrepr.add(sym_stack_size % (binrepr.native_word/8) == 0)
     
     asum = sum(map(lambda x: SExtTo(64, x.symval), alloc_ops))
     asum = alloc_ops[0].symval
