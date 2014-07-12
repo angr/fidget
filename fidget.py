@@ -2,15 +2,15 @@
 
 import sys, os
 import executable
-from patch import binary_patch
+from binary_patch import binary_patch
 import bisect
 import symexec
 
-def main(filename, options):
-    print '\n\n\nLoading %s...' % filename
-    binrepr = executable.Executable(filename)
+def main(infile, outfile, options):
+    if options["verbose"] >= 0: print 'Loading %s...' % infile
+    binrepr = executable.Executable(infile)
     if binrepr.error:
-        print '*** CRITICAL: Not an executable'
+        print >>sys.stderr, '*** CRITICAL: Not an executable'
         return
     binrepr.verbose = options["verbose"]
     binrepr.safe = options["safe"]
@@ -19,11 +19,14 @@ def main(filename, options):
     textfuncs = binrepr.ida.idautils.Functions(*textrange)
     patch_data = []
     for func in textfuncs:
+        if (len(options['whitelist']) > 0 and binrepr.ida.idc.Name(func) not in options['whitelist']) or \
+           (len(options['blacklist']) > 0 and binrepr.ida.idc.Name(func) in options['blacklist']):
+            continue
         patch_data += parse_function(binrepr, func)
 
     if binrepr.verbose > 0:
         print 'Accumulated %d patches, %d bytes of data' % (len(patch_data), sum(map(lambda x: len(x[1]), patch_data)))
-    binary_patch(filename, patch_data, options['outfile'])
+    binary_patch(infile, patch_data, outfile)
 
     try:
         binrepr.ida.close()   # I added a close() function to my local version of idalink so it'll close the databases properly
@@ -32,7 +35,7 @@ def main(filename, options):
 
 
 def parse_function(binrepr, funcaddr):
-    print 'Parsing %s...' % binrepr.ida.idc.Name(funcaddr)
+    if binrepr.verbose >= 0: print 'Parsing %s...' % binrepr.ida.idc.Name(funcaddr)
     symrepr = symexec.Solver()
     binrepr.symrepr = symrepr
     bp_based = False
@@ -96,6 +99,10 @@ def parse_function(binrepr, funcaddr):
                 continue        # this is one of the function's arguments
             Access(typ[1], True, bp_offset, binrepr, variables)
 
+        elif typ[0] == 'STACK_FRAME_ALLOCA':
+            if binrepr.verbose > 0: print '\t*** WARNING: Function appears to use alloca, abandoning\n'
+            return []
+
         else:
             print '\t*** CRITICAL: You forgot to update parse_function(), jerkface!\n'
 
@@ -147,7 +154,7 @@ def parse_function(binrepr, funcaddr):
     asum = alloc_ops[0].symval
     symrepr.add(SExtTo(64, asum) == sym_stack_size)
     for op in dealloc_ops:
-        symrepr.add(ZExtTo(64, op.symval) == sym_stack_size)
+        symrepr.add(SExtTo(64, op.symval) == sym_stack_size)
 
     old_size = variables.stack_size
     variables.stack_size = sym_stack_size
@@ -166,7 +173,6 @@ def parse_function(binrepr, funcaddr):
         for addr in variables.addr_list:
             print 'moved', addr, 'size', variables.variables[addr].size, 'to', symrepr.eval(variables.variables[addr].address)
 
-    print
     out = []
     for alloc in alloc_ops:
         alloc.gotime = True
@@ -175,6 +181,7 @@ def parse_function(binrepr, funcaddr):
         dealloc.gotime = True
         out += dealloc.get_patch_data()
     out += variables.get_patches()
+    if binrepr.verbose > 0: print
     return out
 
 def ZExtTo(size, vec):
@@ -249,9 +256,11 @@ class Variable():
             access.variable = self
 
     def sym_link(self):
-        self.address = symexec.BitVec('var_%x'%self.address, 64)
+        org_addr = self.address
+        self.address = symexec.BitVec('var_%x' % org_addr, 64)
         for access in self.accesses: access.sym_link()
-        self.varlist.binrepr.symrepr.add(self.address % (self.varlist.binrepr.native_word/8) == 0)
+        if org_addr % (self.varlist.binrepr.native_word / 8) == 0:
+            self.varlist.binrepr.symrepr.add(self.address % (self.varlist.binrepr.native_word/8) == 0)
         if self.next is None:
             self.varlist.binrepr.symrepr.add(symexec.ULE(self.address + self.size, self.varlist.stack_size))
         else:
@@ -364,7 +373,11 @@ def addopt(options, option):
     elif option in ('safe'):
         options['safe'] = True
     elif option in ('o', 'output'):
-        options['outfile'] = next(sys.argv)
+        options['outfiles'].append(next(sys.argv))
+    elif option in ('w'):
+        options['whitelist'].append(next(sys.argv))
+    elif option in ('b'):
+        options['blacklist'].append(next(sys.argv))
     else:
         print 'Bad argument: %s' % option
         sys.exit(1)
@@ -379,15 +392,44 @@ Options:
     -v, --verbose           More output
     -q, --quiet             Less output
     -o, --output [file]     Output patched binary to file (default <input>.patched)
+    -w [function]           Whitelist a function name
+    -b [function]           Blacklist a function name
     --safe                  Make conservative modifications
+
+Verbosity:
+    The default verbosity level is 1.
+    Each verbose flag increases it by 1, each quiet flag decreases it by 1.
+
+    Level 0 prints out only the file and function names
+    Level 1 prints out the above and a summary of each function and some warnings
+    Level 2 prints out the above and some debug output
+    Level 3 prints out the above and each instruction as it is parsed
+
+Whitelisting/Blacklisting:
+    You cannot use both a whitelist and a blacklist, obviously.
+
+    Protip: instead of "-w sub_a -w sub_b -w sub_c" you can
+    use "-www sub_a sub_b sub_c" for the same effect.
+
+Safety:
+    Fidget works by rearranging stack variables, which can get sketchy
+    because even identifying where the variables on the stack are is a 
+    difficult problem to begin with. The danger arises that fidget might 
+    seperate, say, an access to my_arr[4] from the rest of my_arr because 
+    it thinks it's a seperate variable.
+
+    The --safe flag will counteract this by keeping all accesses in the 
+    same place relative to eachother. It will still attempt to move them 
+    all up relative to the stack base, preventing buffer overflows 
+    messing with eip, but will be ineffective against overflows that merely 
+    modify or leak other stack variables.
 """ % sys.argv[0]
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         usage()
     else:
-        options = {"verbose": 0, "safe": False, "outfile": None}
-        filenames = []
+        options = {"verbose": 1, "safe": False, "infiles": [], "outfiles": [], "whitelist": [], "blacklist": []}
         sys.argv = iter(sys.argv)
         next(sys.argv)
         for arg in sys.argv:
@@ -396,9 +438,16 @@ if __name__ == '__main__':
             elif arg.startswith('-'):
                 for flag in arg[1:]: addopt(options, flag)
             else:
-                filenames.append(arg)
-        if len(filenames) == 0:
+                options["infiles"].append(arg)
+        if len(options['whitelist']) > 0 and len(options['blacklist']) > 0:
+            print 'Cannot use both a whitlist and a blacklist!'
+            sys.exit(1)
+        if len(options["infiles"]) == 0:
             print 'You must specify a file to operate on!'
             sys.exit(1)
-        for filename in filenames:
-            main(filename, options)
+        if len(options["outfiles"]) > len(options["infiles"]):
+            print 'More output files specified than input files!'
+            sys.exit(1)
+        options['outfiles'] += [None] * (len(options['infiles']) - len(options['outfiles']))
+        for infile, outfile in zip(options['infiles'], options['outfiles']):
+            main(infile, outfile, options)

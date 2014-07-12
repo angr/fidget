@@ -13,33 +13,6 @@ processors = ['i386', 'x86_64', 'arm', 'ppc', 'mips']
 word_size = {0: 1, 1: 2, 2: 4, 7: 8}
 dtyp_by_width = {8: 0, 16: 1, 32: 2, 64: 7}
 
-def resign_int(n, word):
-    top = (1 << word) - 1
-    if (n > top):
-        return None
-    if (n < top/2): # woo int division
-        return int(n)
-    return int(-((n ^ top) + 1))
-
-def unsign_int(n, dtyp):
-    if (dtyp == 0): # 8 bit
-        top = 0xFF
-    elif (dtyp == 1): # 16 bit
-        top = 0xFFFF
-    elif (dtyp == 2): # 32 bit
-        top = 0xFFFFFFFF
-    elif (dtyp == 7): # 64 bit
-        top = 0xFFFFFFFFFFFFFFFF
-    else:
-        return None
-    if (n > top/2):
-        return None
-    elif (n < -top/2):
-        return None
-    if (n >= 0):
-        return int(n)
-    return int(-((n ^ top) + 1))
-
 # Executable
 # not actually a class! fakes being a class because it
 # basically just looks at the filetype, determines what kind
@@ -61,24 +34,20 @@ class _Executable():
             if fstart >= fend:
                 break
 
-    def guess_dtype(self, sval):
-        for dtype in [0, 1, 2, 7]:
-            if unsign_int(sval, dtype) is not None:
-                return dtype
-        return None # ..?
-
     def identify_instr(self, ins):
         s = [self.ida.idc.GetMnem(ins.ea)] + map(lambda x: self.ida.idc.GetOpnd(ins.ea, x), xrange(6))
         if self.identify_bp_assignment(s):
             return ('STACK_TYPE_BP', ins.Op3.value) # somewhat dangerous hack for ARM
         if self.identify_sp_assignment(s):
-            return ('STACK_FRAME_ALLOC', \
-                BinaryData(ins.ea, 1 if self.processor < 2 else 2, \
-                  ins.Op2.value if self.processor < 2 else ins.Op3.value, s, self))
+            relop = ins.Op2 if self.processor < 2 else ins.Op3
+            if relop.type != 5:     # If it's not an immediate, assume this is alloca and panic
+                return ('STACK_FRAME_ALLOCA', (ins.ea, relop.n))
+            return ('STACK_FRAME_ALLOC', BinaryData(ins.ea, relop.n, \
+                    self.resign_int(relop.value), s, self))
         if self.identify_sp_deassignment(s):
-            return ('STACK_FRAME_DEALLOC', \
-                BinaryData(ins.ea, 1 if self.processor < 2 else 2, \
-                  ins.Op2.value if self.processor < 2 else ins.Op3.value, s, self))
+            relop = ins.Op2 if self.processor < 2 else ins.Op3
+            return ('STACK_FRAME_DEALLOC', BinaryData(ins.ea, relop.n, \
+                    self.resign_int(relop.value), s, self))
         if self.identify_bp_pointer(s):
             reladdr = ins.Op3.value * (-1 if s[0].lower() == 'sub' else 1)
             n_ea = ins.ea
@@ -116,12 +85,20 @@ class _Executable():
                 #sanity check first
                 #if not self.sanity_check(ins.ea, opn):
                 #    continue
-                return ('STACK_SP_ACCESS', BinaryData(ins.ea, opn.n, resign_int(opn.addr, self.native_word), s, self))
+                return ('STACK_SP_ACCESS', BinaryData(ins.ea, opn.n, self.resign_int(opn.addr), s, self))
             elif self.get_bp() in s[opn.n+1]:
                 #if not self.sanity_check(ins.ea, opn):
                 #    continue
-                return ('STACK_BP_ACCESS', BinaryData(ins.ea, opn.n, resign_int(opn.addr, self.native_word), s, self))
+                return ('STACK_BP_ACCESS', BinaryData(ins.ea, opn.n, self.resign_int(opn.addr), s, self))
         return ('', 0)
+
+    def resign_int(self, n):
+        top = (1 << self.native_word) - 1
+        if (n > top):
+            return None
+        if (n < top/2): # woo int division
+            return int(n)
+        return int(-((n ^ top) + 1))
 
     def identify_bp_assignment(self, s):
         return s[:3] == ['mov', 'ebp', 'esp'] or \
@@ -145,12 +122,12 @@ class _Executable():
         if op.type == 3:
             return '[%s]' % self.construct_register(op.reg, op.dtyp)
         if op.type == 4:
-            addr = resign_int(op.addr, self.native_dtyp)
+            addr = self.resign_int(op.addr)
             return '[%s%+d]' % (self.construct_register(op.reg, self.native_word), addr)
 
     def construct_operand_arm(self, op):
         if op.type == 4:
-            addr = resign_int(op.addr, self.native_dtyp)
+            addr = self.resign_int(op.addr)
             if addr == 0: return '[%s]' % self.construct_register(op.reg, self.native_dtyp)
             return '[%s,#%d]' % (self.construct_register(op.reg, self.native_word), addr)
         
@@ -243,7 +220,7 @@ class ElfExecutable(_Executable):
         except:
             self.nonnative = True
         if self.nonnative:
-            print "Warning: analysing binary for non-native platform"
+            pass #print "Warning: analysing binary for non-native platform"
         self.ida = idalink.IDALink(filename, "idal64" if self.is_64_bit() else "idal")
         self.get_section_by_name = self.elfreader.get_section_by_name
 
@@ -282,6 +259,8 @@ class BinaryData():         # The fundemental link between binary data and thing
 
         binrepr.filestream.seek(self.physaddr)
         self.insbytes = binrepr.filestream.read(self.inslen)
+        print self.insbytes.encode('hex')
+        print self.inslen
 
         if value is not None:
             if value is True:
@@ -369,7 +348,7 @@ class BinaryData():         # The fundemental link between binary data and thing
                     if result is None: continue
                     result = self.endian_reverse(result, word_size/8)
                     if result != self.uvalue: continue
-                    self.value = abs(self.value) / 2 + 0x35
+                    self.value = (1 << word_size) / 3 # TODO: Do this less hardcodedly
                     self.bit_offset = byte_offset * 8
                     if self.sanity_check():
                         found = True
@@ -445,7 +424,7 @@ class BinaryData():         # The fundemental link between binary data and thing
         if self.armop == 1:
             newval = self.armins & 0xFF7FF000
             newimm = self.symrepr.eval(self.symval).as_long()
-            newimm = resign_int(newimm, 32)
+            newimm = self.binrepr.resign_int(newimm)
             if newimm > 0:
                 newval |= 0x00800000
             newval |= abs(newimm)
@@ -453,7 +432,7 @@ class BinaryData():         # The fundemental link between binary data and thing
         elif self.armop == 2:
             newval = self.armins & 0xFFFFF000
             newimm = self.symrepr.eval(self.symval8).as_long()
-            newimm = resign_int(newimm, 32)
+            newimm = self.binrepr.resign_int(newimm)
             newshift = self.symrepr.eval(self.bit_shift).as_long()
             newval |= newshift << 8
             newval |= newimm
@@ -461,7 +440,7 @@ class BinaryData():         # The fundemental link between binary data and thing
         elif self.armop == 3:
             newval = self.armins & 0xFF7FF0F0
             newimm = self.symrepr.eval(self.symval).as_long()
-            newimm = resign_int(newimm, 32)
+            newimm = self.binrepr.resign_int(newimm)
             if newimm > 0:
                 newval |= 0x00800000
             newimm = abs(newimm)
@@ -471,7 +450,7 @@ class BinaryData():         # The fundemental link between binary data and thing
         elif self.armop == 4:
             newval = self.armins & 0xFF7FFF00
             newimm = self.symrepr.eval(self.symval).as_long() / 4
-            newimm = resign_int(newimm, 32)
+            newimm = self.binrepr.resign_int(newimm)
             if newimm > 0:
                 newval |= 0x00800000
             newval |= abs(newimm)
