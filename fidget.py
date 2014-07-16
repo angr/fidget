@@ -81,11 +81,10 @@ def parse_function(binrepr, funcaddr):
                 return []
             offset = binrepr.ida.idc.GetSpd(ins.ea) + variables.stack_size + size_offset if size_offset is not None else 0
             if offset + typ[1].value < 0:
-                if binrepr.verbose > 0: print '\t*** Warning (%x): Function appears ' + \
-                        'to be accessing above its stack frame, discarding instruction' % ins.ea
+                if binrepr.verbose > 0: print '\t*** Warning (%x): Function appears to be accessing above its stack frame, discarding instruction' % ins.ea
                 continue
-            if offset + typ[1].value > variables.stack_size:
-                continue        # this is one of the function's arguments
+            #if offset + typ[1].value > variables.stack_size:
+            #    continue        # this is one of the function's arguments
             # Do not filter out args to the next function here because we need to have everythign first
             Access(typ[1], False, offset, binrepr, variables)
 
@@ -156,7 +155,7 @@ def parse_function(binrepr, funcaddr):
     for op in dealloc_ops:
         symrepr.add(SExtTo(64, op.symval) == sym_stack_size)
 
-    old_size = variables.stack_size
+    variables.old_size = variables.stack_size
     variables.stack_size = sym_stack_size
     variables.sym_link()
 
@@ -167,7 +166,7 @@ def parse_function(binrepr, funcaddr):
         print
 
     if binrepr.verbose > 0:
-        print '\tResized stack from', old_size, 'to', symrepr.eval(variables.stack_size)
+        print '\tResized stack from', variables.old_size, 'to', symrepr.eval(variables.stack_size)
 
     if binrepr.verbose > 1:
         for addr in variables.addr_list:
@@ -238,6 +237,7 @@ class Variable():
         self.all_sp = True
         self.add_access(access)
         varlist.add_variable(self)
+        self.special = self.address >= varlist.stack_size
 
     def add_access(self, access):
         self.accesses.append(access)
@@ -259,12 +259,18 @@ class Variable():
         org_addr = self.address
         self.address = symexec.BitVec('var_%x' % org_addr, 64)
         for access in self.accesses: access.sym_link()
+        if self.special:
+            self.varlist.binrepr.symrepr.add(self.address == (org_addr - self.varlist.old_size) + self.varlist.stack_size)
+            if self.next is not None:
+                self.next.sym_link()
+            return
         if org_addr % (self.varlist.binrepr.native_word / 8) == 0:
             self.varlist.binrepr.symrepr.add(self.address % (self.varlist.binrepr.native_word/8) == 0)
-        if self.next is None:
-            self.varlist.binrepr.symrepr.add(symexec.ULE(self.address + self.size, self.varlist.stack_size))
-        else:
+        if self.next is None or self.next.special:
+            self.varlist.binrepr.symrepr.add(symexec.ULE(self.address + (self.varlist.old_size - org_addr), self.varlist.stack_size))
+        if self.next is not None:
             self.next.sym_link()
+        if self.next is not None and not self.next.special:
             if self.varlist.binrepr.safe:
                 self.varlist.binrepr.symrepr.add(self.address + self.size == self.next.address)
             else:
@@ -279,6 +285,7 @@ class VarList():
         self.addr_list = [] # all the addresses, kept sorted
         self.binrepr = binrepr
         self.stack_size = stack_size
+        self.old_size = stack_size
 
     def __getitem__(self, key):
         return self.variables[key]
@@ -291,7 +298,7 @@ class VarList():
         return val in self.variables
 
     def __len__(self):
-        return len(self.variables)
+        return len([0 for x in self.variables if not self.variables[x].special])
 
     def add_variable(self, var):
         self.variables[var.address] = var
@@ -314,6 +321,8 @@ class VarList():
         while i < len(self.addr_list) - 1:
             i += 1
             var = self.variables[self.addr_list[i]]
+            if var.special:
+                continue
             if var.address < 0:
                 self.merge_down(i)
                 i -= 1

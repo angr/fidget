@@ -35,6 +35,9 @@ class _Executable():
                 break
 
     def identify_instr(self, ins):
+        self.ida.idc.OpDecimal(ins.ea, 0)
+        self.ida.idc.OpDecimal(ins.ea, 1)
+        self.ida.idc.OpDecimal(ins.ea, 2)
         s = [self.ida.idc.GetMnem(ins.ea)] + map(lambda x: self.ida.idc.GetOpnd(ins.ea, x), xrange(6))
         if self.identify_bp_assignment(s):
             return ('STACK_TYPE_BP', ins.Op3.value) # somewhat dangerous hack for ARM
@@ -48,17 +51,19 @@ class _Executable():
             relop = ins.Op2 if self.processor < 2 else ins.Op3
             return ('STACK_FRAME_DEALLOC', BinaryData(ins.ea, relop.n, \
                     self.resign_int(relop.value), s, self))
-        if self.identify_bp_pointer(s):
+        if self.identify_bp_pointer(s) or self.identify_sp_pointer(s):
+            if self.identify_bp_pointer(s) and self.ida.idc.GetReg(ins.ea, 'T'):
+                return ('', 0)
             reladdr = ins.Op3.value * (-1 if s[0].lower() == 'sub' else 1)
             n_ea = ins.ea
             accumulator = BinaryDataConglomerate('complex_' + hex(n_ea)[2:], BinaryData(n_ea, 2, True, s, self))
-            if s[0].lower() == 'sub':
+            if s[0].lower() in ('sub', 'subs', 'sub.w'):
                 accumulator.value = -accumulator.value
                 accumulator.symval = -accumulator.symval
             while True:
                 n_ea = self.ida.idc.NextHead(n_ea)
                 n_mnem = self.ida.idc.GetMnem(n_ea).lower()
-                if n_mnem not in ('add', 'sub'): break
+                if n_mnem not in ('add', 'sub', 'adds', 'subs', 'add.w', 'sub.w'): break
                 if self.ida.idc.GetOpnd(n_ea, 1) != s[1]: break
                 if self.ida.idc.GetOpType(n_ea, 2) != 5: break # must be immediate value
                 if self.verbose > 1:
@@ -67,13 +72,16 @@ class _Executable():
                 v = self.ida.idc.GetOperandValue(n_ea, 2)
                 b = BinaryData(n_ea, 2, v, s, self) # FIXME: Send the actual right s value
                 accumulator.add(b)
-                if n_mnem == 'sub':
+                if n_mnem in ('sub', 'subs', 'sub.w'):
                     accumulator.value -= v
                     accumulator.symval -= b.symval
                 else:
                     accumulator.value += v
                     accumulator.symval += b.symval
-            return ('STACK_BP_ACCESS', accumulator)
+            if self.identify_bp_pointer(s):
+                return ('STACK_BP_ACCESS', accumulator)
+            else:
+                return ('STACK_SP_ACCESS', accumulator)
         for opn in ins.Operands:
             if opn.type == 0: break
             if opn.type == 3 and opn.has_reg(self.ida.idautils.procregs.sp):
@@ -92,8 +100,9 @@ class _Executable():
                 return ('STACK_BP_ACCESS', BinaryData(ins.ea, opn.n, self.resign_int(opn.addr), s, self))
         return ('', 0)
 
-    def resign_int(self, n):
-        top = (1 << self.native_word) - 1
+    def resign_int(self, n, word_size=None):
+        if word_size is None: word_size = self.native_word
+        top = (1 << word_size) - 1
         if (n > top):
             return None
         if (n < top/2): # woo int division
@@ -116,7 +125,10 @@ class _Executable():
                 s[:3] == ['ADD', 'SP', 'SP']
 
     def identify_bp_pointer(self, s):
-        return (s[0] in ('SUB', 'ADD') and s[2] == 'R11' and s[1] != 'SP')
+        return (s[0] in ('SUB', 'ADD', 'SUBS', 'ADDS', 'SUB.W', 'ADD.W') and s[2] == 'R11' and s[1] != 'SP')
+
+    def identify_sp_pointer(self, s):
+        return (s[0] in ('SUB', 'ADD', 'SUBS', 'ADDS', 'SUB.W', 'ADD.W') and s[2] == 'SP' and s[1] != 'R11')
 
     def construct_operand_x86(self, op):
         if op.type == 3:
@@ -149,7 +161,6 @@ class _Executable():
         return ['ebp','rbp','R11'][self.processor]
 
     def sanity_check(self, ea, op):
-        self.ida.idc.OpDecimal(ea, op.n)
         mine = self.construct_operand(op)
         idas = self.ida.idc.GetOpnd(ea, op.n)
         if mine not in idas:
@@ -259,8 +270,6 @@ class BinaryData():         # The fundemental link between binary data and thing
 
         binrepr.filestream.seek(self.physaddr)
         self.insbytes = binrepr.filestream.read(self.inslen)
-        print self.insbytes.encode('hex')
-        print self.inslen
 
         if value is not None:
             if value is True:
@@ -277,9 +286,17 @@ class BinaryData():         # The fundemental link between binary data and thing
             self.value = 0
 
     def search_value(self):
+        self.bit_shift = 0
         if self.binrepr.processor == 2:
-            self.armins = struct.unpack('I', self.insbytes)[0]
-            if self.armins & 0x0C000000 == 0x04000000:
+            self.bit_length = 32
+            if len(self.insbytes) == 4:
+                self.armins = struct.unpack('I', self.insbytes)[0]
+            elif len(self.insbytes) == 2:
+                self.armins = struct.unpack('H', self.insbytes)[0]
+            else:
+                raise Exception("Holy crap ARM what???")
+            self.armthumb = self.binrepr.ida.idc.GetReg(self.memaddr, "T") == 1
+            if not self.armthumb and self.armins & 0x0C000000 == 0x04000000:
                 # LDR
                 self.armop = 1
                 thoughtval = self.armins & 0xFFF
@@ -288,9 +305,7 @@ class BinaryData():         # The fundemental link between binary data and thing
                     print 'case 1'
                     print hex(thoughtval), hex(self.value), hex(self.armins)
                     raise Exception("(%x) Either IDA or I really don't understand this instruction!" % self.memaddr)
-                self.bit_shift = 0
-                self.bit_length = 32
-            elif self.armins & 0x0E000000 == 0x02000000:
+            elif not self.armthumb and self.armins & 0x0E000000 == 0x02000000:
                 # Data processing w/ immediate
                 self.armop = 2
                 shiftval = ((self.armins & 0xF00) >> 7)
@@ -305,8 +320,7 @@ class BinaryData():         # The fundemental link between binary data and thing
                 self.symval = symexec.BitVec(hex(self.memaddr)[2:] + '_imm', 32)
                 self.symval8 = symexec.BitVec(hex(self.memaddr)[2:] + '_imm8', 8)
                 self.symrepr.add(self.symval == symexec.RotateRight(symexec.ZeroExt(32-8, self.symval8), symexec.ZeroExt(32-4, self.bit_shift)*2))
-                self.bit_length = 32
-            elif self.armins & 0x0E400090 == 0x00400090:
+            elif not self.armthumb and self.armins & 0x0E400090 == 0x00400090:
                 # LDRH
                 self.armop = 3
                 thoughtval = (self.armins & 0xF) | ((self.armins & 0xF00) >> 4)
@@ -315,9 +329,7 @@ class BinaryData():         # The fundemental link between binary data and thing
                     print 'case 3'
                     print hex(thoughtval), hex(self.value), hex(self.armins)
                     raise Exception("(%x) Either IDA or I really don't understand this instruction!" % self.memaddr)
-                self.bit_shift = 0
-                self.bit_length = 32
-            elif self.armins & 0x0E000000 == 0x0C000000:
+            elif not self.armthumb and self.armins & 0x0E000000 == 0x0C000000:
                 # Coprocessor data transfer
                 # i.e. FLD/FST
                 self.armop = 4
@@ -327,8 +339,119 @@ class BinaryData():         # The fundemental link between binary data and thing
                     print 'case 4'
                     print hex(thoughtval), hex(self.value), hex(self.armins)
                     raise Exception("(%x) Either IDA or I really don't understand this instruction!" % self.memaddr)
-                self.bit_shift = 0
-                self.bit_length = 32
+                self.symval = symexec.BitVec(hex(self.memaddr)[2:] + '_' + str(self.opn), self.bit_length)
+                rng = self.get_range()
+                self.symrepr.add(self.symval >= rng[0])
+                self.symrepr.add(self.symval <= rng[1] - 1)
+                self.symrepr.add(self.symval % 4 == 0)
+            elif self.armthumb and self.armins & 0xF000 in (0x9000, 0xA000):
+                # SP-relative LDR/STR, also SP-addiition
+                self.armop = 5
+                thoughtval = self.armins & 0xFF
+                thoughtval *= 4
+                if thoughtval != self.value:
+                    print 'case 5'
+                    print hex(thoughtval), hex(self.value), hex(self.armins)
+                    raise Exception("(%x) Either IDA or I really don't understand this instruction!" % self.memaddr)
+                self.symval = symexec.BitVec(hex(self.memaddr)[2:] + '_' + str(self.opn), self.bit_length)
+                rng = self.get_range()
+                self.symrepr.add(self.symval >= rng[0])
+                self.symrepr.add(self.symval <= rng[1] - 1)
+                self.symrepr.add(self.symval % 4 == 0)
+            elif self.armthumb and self.armins & 0xFF00 == 0xB000:
+                # Add/sub offset to SP
+                # I'm gonna cheat here because I'm worried about how IDA might interpret... various things
+                self.armop = 6
+                thoughtval = self.armins & 0x7F
+                thoughtval *= 4
+                if thoughtval != self.value:
+                    print 'case 6'
+                    print hex(thoughtval), hex(self.value), hex(self.armins)
+                    raise Exception("(%x) Either IDA or I really don't understand this instruction!" % self.memaddr)
+                self.symval = symexec.BitVec(hex(self.memaddr)[2:] + '_' + str(self.opn), self.bit_length)
+                rng = self.get_range()
+                self.symrepr.add(self.symval >= rng[0])
+                self.symrepr.add(self.symval <= rng[1] - 1)
+                self.symrepr.add(self.symval % 4 == 0)
+            elif self.armthumb and self.armins & 0x0000FFE0 == 0x0000E840:
+                # Thumb32 - LDREX/STREX ...
+                self.armop = 7
+                thoughtval = (self.armins & 0x00FF0000) >> 16
+                thoughtval *= 4
+                if thoughtval != self.value:
+                    print 'case 7'
+                    print hex(thoughtval), hex(self.value), hex(self.armins)
+                    raise Exception("(%x) Either IDA or I really don't understand this instruction!" % self.memaddr)
+                self.symval = symexec.BitVec(hex(self.memaddr)[2:] + '_' + str(self.opn), self.bit_length)
+                rng = self.get_range()
+                self.symrepr.add(self.symval >= rng[0])
+                self.symrepr.add(self.symval <= rng[1] - 1)
+                self.symrepr.add(self.symval % 4 == 0)
+            elif self.armthumb and self.armins & 0x0000FE40 == 0x0000E840:
+                # Thumb32 - LDRD/STRD
+                self.armop = 8
+                thoughtval = (self.armins & 0x00FF0000) >> 16
+                thoughtval *= 4 if self.armins & 0x00000080 else -4
+                if thoughtval != self.value:
+                    print 'case 8'
+                    print hex(thoughtval), hex(self.value), hex(self.armins)
+                    raise Exception("(%x) Either IDA or I really don't understand this instruction!" % self.memaddr)
+                self.symval = symexec.BitVec(hex(self.memaddr)[2:] + '_' + str(self.opn), self.bit_length)
+                rng = self.get_range()
+                self.symrepr.add(self.symval >= rng[0])
+                self.symrepr.add(self.symval <= rng[1] - 1)
+                self.symrepr.add(self.symval % 4 == 0)
+            elif self.armthumb and self.armins & 0x0800FE80 == 0x0800F800 and self.armins & 0x05000000 != 0:
+                # Thumb32 - something something LDR/STR
+                self.armop = 9
+                thoughtval = (self.armins & 0x00FF0000) >> 16
+                if self.armins & 0x00000100:
+                    thoughtval = self.binrepr.resign_int(thoughtval, 8)
+                if thoughtval != self.value:
+                    print 'case 9'
+                    print hex(thoughtval), hex(self.value), hex(self.armins)
+                    raise Exception("(%x) Either IDA or I really don't understand this instruction!" % self.memaddr)
+            elif self.armthumb and self.armins & 0x0000FE80 == 0x0000F880:
+                # Thumb32 - LDR/STR with 12-bit imm
+                self.armop = 10
+                thoughtval = (self.armins & 0x0FFF0000) >> 16
+                if self.armins & 0x00000100:
+                    thoughtval = self.binrepr.resign_int(thoughval, 12)
+                if thoughtval != self.value:
+                    print 'case 10'
+                    print hex(thoughtval), hex(self.value), hex(self.armins)
+                    raise Exception("(%x) Either IDA or I really don't understand this instruction!" % self.memaddr)
+            elif self.armthumb and self.armins & 0x8000FA00 == 0x0000F000:
+                # Thumb32 - Data processing w/ modified 12 bit imm a.k.a EVIL
+                if self.armins & 0x70000400:
+                    # stupid cases-- do not touch
+                    self.armop = 12
+                    self.symval = symexec.BitVec(hex(self.memaddr)[2:] + '_' + str(self.opn) + '_nope', self.bit_length)
+                    self.symrepr.add(self.symval == self.value)
+                else:
+                    self.armop = 11
+                    thoughtval = (self.armins & 0x00FF0000) >> 16
+                    if thoughtval != self.value:
+                        print 'case 11'
+                        print hex(thoughtval), hex(self.value), hex(self.armins)
+                        raise Exception("(%x) Either IDA or I really don't understand this instruction!" % self.memaddr)
+            elif self.armthumb and self.armins & 0xFC00 == 0x1C00:
+                # Thumb - ADD/SUB
+                self.armop = 13
+                thoughtval = (self.armins & 0x01C0) >> 6
+                if thoughtval != self.value:
+                    print 'case 13'
+                    print hex(thoughtval), hex(self.value), hex(self.armins)
+                    raise Exception("(%x) Either IDA or I really don't understand this instruction!" % self.memaddr)
+            elif self.armthumb and self.armins & 0x0000EE00 == 0x0000EC00:
+                # Thumb32 - Coprocessor stuff
+                self.armop = 14
+                thoughtval = (self.armins & 0x00FF0000) >> 16
+                thoughtval *= 4 if self.armins & 0x00000080 else -4
+                if thoughtval != self.value:
+                    print 'case 14'
+                    print hex(thoughtval), hex(self.value), hex(self.armins), len(self.insbytes)
+                    raise Exception("(%x) Either IDA or I really don't understand this instruction!" % self.memaddr)
                 self.symval = symexec.BitVec(hex(self.memaddr)[2:] + '_' + str(self.opn), self.bit_length)
                 rng = self.get_range()
                 self.symrepr.add(self.symval >= rng[0])
@@ -338,7 +461,6 @@ class BinaryData():         # The fundemental link between binary data and thing
                 raise Exception("(%x) Unsupported ARM instruction!" % self.memaddr)
         else:
             self.armop = 0
-            self.bit_shift = 0
             found = False
             for word_size in (64, 32, 16, 8):
                 self.bit_length = word_size
@@ -455,6 +577,65 @@ class BinaryData():         # The fundemental link between binary data and thing
                 newval |= 0x00800000
             newval |= abs(newimm)
             return [(self.physaddr, struct.pack('I', newval))]
+        elif self.armop == 5:
+            newval = self.armins & 0xFF00
+            newimm = self.symrepr.eval(self.symval).as_long() / 4
+            newval |= newimm
+            return [(self.physaddr, struct.pack('H', newval))]
+        elif self.armop == 6:
+            newval = self.armins & 0xFF80
+            newimm = self.symrepr.eval(self.symval).as_long() / 4
+            newval |= newimm
+            return [(self.physaddr, struct.pack('H', newval))]
+        elif self.armop == 7:
+            newval = self.armins & 0xFF00FFFF
+            newimm = self.symrepr.eval(self.symval).as_long() / 4
+            newval |= newimm << 16
+            return [(self.physaddr, struct.pack('I', newval))]
+        elif self.armop == 8:
+            newval = self.armins & 0xFF00FF7F
+            newimm = self.symrepr.eval(self.symval).as_long() / 4
+            if newimm > 0:
+                newval |= 0x00000080
+            newval |= abs(newimm) << 16
+            return [(self.physaddr, struct.pack('I', newval))]
+        elif self.armop == 9:
+            newval = self.armins & 0xFF00FEFF
+            newimm = self.symrepr.eval(self.symval).as_long()
+            if newimm < 0:
+                newimm = 0x100 + newimm
+                newval |= 0x00000100
+            newval |= newimm << 16
+            return [(self.physaddr, struct.pack('I', newval))]
+        elif self.armop == 10:
+            newval = self.armins & 0xF000FEFF
+            newimm = self.symrepr.eval(self.symval).as_long()
+            if newimm < 0:
+                newimm = 0x1000 + newimm
+                newval |= 0x00000100
+            newval |= newimm << 16
+            return [(self.physaddr, struct.pack('I', newval))]
+        elif self.armop == 11:
+            newval = self.armins & 0xFF00FFFF
+            newimm = self.symrepr.eval(self.symval).as_long()
+            newval |= newimm << 16
+            return [(self.physaddr, struct.pack('I', newval))]
+        elif self.armop == 12:
+            return []
+        elif self.armop == 13:
+            newval = self.armins & 0xFE3F
+            newimm = self.symrepr.eval(self.symval).as_long()
+            newval |= newimm << 6
+            return [(self.physaddr, struct.pack('H', newval))]
+        elif self.armop == 14:
+            newval = (self.armins & 0xFF00FF7F) / 4
+            newimm = self.symrepr.eval(self.symval).as_long()
+            if newimm > 0:
+                newval |= 0x00000080
+            else:
+                newimm = abs(newimm)
+            newval |= newimm << 16
+            return [(self.physaddr, struct.pack('I', newval))]
         elif self.bit_offset % 8 == 0 and self.bit_length % 8 == 0:
             self.set_uvalue()
             outs = [x for x in self.insbytes]
@@ -485,10 +666,24 @@ class BinaryData():         # The fundemental link between binary data and thing
     def get_range(self):
         if self.armop == 1:
            return (-0xFFF, 0x1000)
-        elif self.armop == 3:
+        elif self.armop in (3,):
             return (-0xFF, 0x100)
-        elif self.armop == 4:
+        elif self.armop in (4, 8, 14):
             return (-0x3FF, 0x400)
+        elif self.armop in (5, 7):
+            return (0, 0x400)
+        elif self.armop == 6:
+            return (0, 0x200)
+        elif self.armop == 9:
+            return (-0x7F, 0x100)
+        elif self.armop == 10:
+            return (-0x7FF, 0x1000)
+        elif self.armop == 11:
+            return (0, 0x100)
+        elif self.armop == 12:
+            return (self.value, self.value+1)
+        elif self.armop == 13:
+            return (0, 8)
         elif self.signed or self.armop == 2:
             half = (1 << self.bit_length) / 2
             return (-half, half, 1 << self.bit_shift)
