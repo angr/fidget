@@ -1,28 +1,26 @@
-#!/usr/bin/python
-
 import sys, os
 import executable
 from binary_patch import binary_patch
 import bisect
 import symexec
 
-def main(infile, outfile, options):
-    if options["verbose"] >= 0: print 'Loading %s...' % infile
+def patch(infile, outfile, safe=False, verbose=1, whitelist=[], blacklist=[]):
+    if verbose >= 0: print 'Loading %s...' % infile
     binrepr = executable.Executable(infile)
     if binrepr.error:
         print >>sys.stderr, '*** CRITICAL: Not an executable'
         return
-    binrepr.verbose = options["verbose"]
-    binrepr.safe = options["safe"]
+    binrepr.verbose = verbose
+    binrepr.safe = safe
     textsec = binrepr.get_section_by_name('.text')
     textrange = (textsec.header.sh_addr, textsec.header.sh_addr + textsec.header.sh_size)
     textfuncs = binrepr.ida.idautils.Functions(*textrange)
     patch_data = []
     for func in textfuncs:
-        if (len(options['whitelist']) > 0 and binrepr.ida.idc.Name(func) not in options['whitelist']) or \
-           (len(options['blacklist']) > 0 and binrepr.ida.idc.Name(func) in options['blacklist']):
+        if (len(whitelist) > 0 and binrepr.ida.idc.Name(func) not in whitelist) or \
+           (len(blacklist) > 0 and binrepr.ida.idc.Name(func) in blacklist):
             continue
-        patch_data += parse_function(binrepr, func)
+        patch_data += patch_function(binrepr, func)
 
     if binrepr.verbose > 0:
         print 'Accumulated %d patches, %d bytes of data' % (len(patch_data), sum(map(lambda x: len(x[1]), patch_data)))
@@ -34,7 +32,7 @@ def main(infile, outfile, options):
         pass
 
 
-def parse_function(binrepr, funcaddr):
+def patch_function(binrepr, funcaddr):
     if binrepr.verbose >= 0: print 'Parsing %s...' % binrepr.ida.idc.Name(funcaddr)
     symrepr = symexec.Solver()
     binrepr.symrepr = symrepr
@@ -371,92 +369,3 @@ class VarList():
         var.size = self.stack_size - var.address
 
 
-def addopt(options, option):
-    if option in ('v', 'verbose'):
-        options["verbose"] += 1
-    elif option in ('q', 'quiet'):
-        options["verbose"] -= 1
-    elif option in ('h', 'help'):
-        usage()
-        os.exit(0)
-    elif option in ('safe'):
-        options['safe'] = True
-    elif option in ('o', 'output'):
-        options['outfiles'].append(next(sys.argv))
-    elif option in ('w'):
-        options['whitelist'].append(next(sys.argv))
-    elif option in ('b'):
-        options['blacklist'].append(next(sys.argv))
-    else:
-        print 'Bad argument: %s' % option
-        sys.exit(1)
-
-def usage():
-    print """Fidget: The Binary Tweaker
-
-Usage: %s [options] filename
-
-Options:
-    -h, --help              View this usage information and exit
-    -v, --verbose           More output
-    -q, --quiet             Less output
-    -o, --output [file]     Output patched binary to file (default <input>.patched)
-    -w [function]           Whitelist a function name
-    -b [function]           Blacklist a function name
-    --safe                  Make conservative modifications
-
-Verbosity:
-    The default verbosity level is 1.
-    Each verbose flag increases it by 1, each quiet flag decreases it by 1.
-
-    Level 0 prints out only the file and function names
-    Level 1 prints out the above and a summary of each function and some warnings
-    Level 2 prints out the above and some debug output
-    Level 3 prints out the above and each instruction as it is parsed
-
-Whitelisting/Blacklisting:
-    You cannot use both a whitelist and a blacklist, obviously.
-
-    Protip: instead of "-w sub_a -w sub_b -w sub_c" you can
-    use "-www sub_a sub_b sub_c" for the same effect.
-
-Safety:
-    Fidget works by rearranging stack variables, which can get sketchy
-    because even identifying where the variables on the stack are is a 
-    difficult problem to begin with. The danger arises that fidget might 
-    seperate, say, an access to my_arr[4] from the rest of my_arr because 
-    it thinks it's a seperate variable.
-
-    The --safe flag will counteract this by keeping all accesses in the 
-    same place relative to eachother. It will still attempt to move them 
-    all up relative to the stack base, preventing buffer overflows 
-    messing with eip, but will be ineffective against overflows that merely 
-    modify or leak other stack variables.
-""" % sys.argv[0]
-
-if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        usage()
-    else:
-        options = {"verbose": 1, "safe": False, "infiles": [], "outfiles": [], "whitelist": [], "blacklist": []}
-        sys.argv = iter(sys.argv)
-        next(sys.argv)
-        for arg in sys.argv:
-            if arg.startswith('--'):
-                addopt(options, arg[2:])
-            elif arg.startswith('-'):
-                for flag in arg[1:]: addopt(options, flag)
-            else:
-                options["infiles"].append(arg)
-        if len(options['whitelist']) > 0 and len(options['blacklist']) > 0:
-            print 'Cannot use both a whitlist and a blacklist!'
-            sys.exit(1)
-        if len(options["infiles"]) == 0:
-            print 'You must specify a file to operate on!'
-            sys.exit(1)
-        if len(options["outfiles"]) > len(options["infiles"]):
-            print 'More output files specified than input files!'
-            sys.exit(1)
-        options['outfiles'] += [None] * (len(options['infiles']) - len(options['outfiles']))
-        for infile, outfile in zip(options['infiles'], options['outfiles']):
-            main(infile, outfile, options)

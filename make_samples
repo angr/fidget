@@ -1,13 +1,11 @@
 #!/bin/bash
 
-set -x
-
 cd samplebins
-wget http://shell-storm.org/repo/CTF/Defcon-21-quals/bitterswallow/bs -O ctf_arm
-wget http://andrewdutcher.com/helium/codegatej-14-binaries/nuclear/nuclear -O ctf_x86
+wget http://andrewdutcher.com/helium/trafman -O ctf_arm
+wget http://shell-storm.org/repo/CTF/CodeGate-2014-Juinor-Quals/nuclear/nuclear -O ctf_x86
 wget http://shell-storm.org/repo/CTF/GITS-2013/Pwnable/Shiftd-100/shiftd-3a9c2a55e77d1467ee46dfb931170c737d24f310 -O ctf_amd64
 gcc test_arrays.c -o test_arrays_native
-gcc test_arrays.c -m32 -o test_arrays_native32 2> /dev/null
+gcc test_arrays.c -m32 -o test_arrays_native32
 
 # if the latter compiled but they're the exact same, remove the latter
 [ -f test_arrays_native32 ] && [ -f test_arrays_native ] && diff test_arrays_native32 test_arrays_native >/dev/null && rm test_arrays_native32

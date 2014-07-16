@@ -407,6 +407,8 @@ class BinaryData():         # The fundemental link between binary data and thing
                 thoughtval = (self.armins & 0x00FF0000) >> 16
                 if self.armins & 0x00000100:
                     thoughtval = self.binrepr.resign_int(thoughtval, 8)
+                if self.armins & 0x02000000 == 0:
+                    thoughtval *= -1
                 if thoughtval != self.value:
                     print 'case 9'
                     print hex(thoughtval), hex(self.value), hex(self.armins)
@@ -457,6 +459,16 @@ class BinaryData():         # The fundemental link between binary data and thing
                 self.symrepr.add(self.symval >= rng[0])
                 self.symrepr.add(self.symval <= rng[1] - 1)
                 self.symrepr.add(self.symval % 4 == 0)
+            elif self.armthumb and self.armins & 0x8000FB40 == 0x0000F200:
+                # Thumb32 - ADD/SUB plain 12 bit imm
+                self.armop = 15
+                thoughtval = (self.armins & 0x00FF0000) >> 16
+                thoughtval |= (self.armins & 0x70000000) >> 20
+                thoughtval |= (self.armins & 0x00000400) << 1
+                if thoughtval != self.value:
+                    print 'case 15'
+                    print hex(thoughtval), hex(self.value), hex(self.armins), len(self.insbytes)
+                    raise Exception("(%x) Either IDA or I really don't understand this instruction!" % self.memaddr)
             else:
                 raise Exception("(%x) Unsupported ARM instruction!" % self.memaddr)
         else:
@@ -600,11 +612,12 @@ class BinaryData():         # The fundemental link between binary data and thing
             newval |= abs(newimm) << 16
             return [(self.physaddr, struct.pack('I', newval))]
         elif self.armop == 9:
-            newval = self.armins & 0xFF00FEFF
+            newval = self.armins & 0xFD00FEFF
             newimm = self.symrepr.eval(self.symval).as_long()
-            if newimm < 0:
-                newimm = 0x100 + newimm
-                newval |= 0x00000100
+            if newimm > 0:
+                newval |= 0x02000000
+            else:
+                newimm = abs(newimm)
             newval |= newimm << 16
             return [(self.physaddr, struct.pack('I', newval))]
         elif self.armop == 10:
@@ -628,13 +641,20 @@ class BinaryData():         # The fundemental link between binary data and thing
             newval |= newimm << 6
             return [(self.physaddr, struct.pack('H', newval))]
         elif self.armop == 14:
-            newval = (self.armins & 0xFF00FF7F) / 4
-            newimm = self.symrepr.eval(self.symval).as_long()
+            newval = self.armins & 0xFF00FF7F
+            newimm = self.symrepr.eval(self.symval).as_long() / 4
             if newimm > 0:
                 newval |= 0x00000080
             else:
                 newimm = abs(newimm)
             newval |= newimm << 16
+            return [(self.physaddr, struct.pack('I', newval))]
+        elif self.armop == 15:
+            newval = self.armins & 0x8F00FBFF
+            newimm = self.symrepr.eval(self.symval).as_long()
+            newval |= (newimm & 0x800) >> 1
+            newval |= (newimm & 0x700) << 20
+            newval |= (newimm & 0xFF) << 16
             return [(self.physaddr, struct.pack('I', newval))]
         elif self.bit_offset % 8 == 0 and self.bit_length % 8 == 0:
             self.set_uvalue()
@@ -666,7 +686,7 @@ class BinaryData():         # The fundemental link between binary data and thing
     def get_range(self):
         if self.armop == 1:
            return (-0xFFF, 0x1000)
-        elif self.armop in (3,):
+        elif self.armop in (3, 9):
             return (-0xFF, 0x100)
         elif self.armop in (4, 8, 14):
             return (-0x3FF, 0x400)
@@ -674,8 +694,6 @@ class BinaryData():         # The fundemental link between binary data and thing
             return (0, 0x400)
         elif self.armop == 6:
             return (0, 0x200)
-        elif self.armop == 9:
-            return (-0x7F, 0x100)
         elif self.armop == 10:
             return (-0x7FF, 0x1000)
         elif self.armop == 11:
@@ -684,6 +702,8 @@ class BinaryData():         # The fundemental link between binary data and thing
             return (self.value, self.value+1)
         elif self.armop == 13:
             return (0, 8)
+        elif self.armop == 15:
+            return (0, 0x1000)
         elif self.signed or self.armop == 2:
             half = (1 << self.bit_length) / 2
             return (-half, half, 1 << self.bit_shift)
