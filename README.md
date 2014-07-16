@@ -7,6 +7,5 @@ that makes assumptions about the stack layout will fail, which should protect
 against any exploit leveraging a buffer overflow or format string 
 vulnerability, which is most of them.
 
-It is not done.
-
-You'll want to fix up the symlinks to idal and idal64.
+This branch is designed to try to use the lab's pet project, angr, instead of 
+IDA. We'll see how that works out.
