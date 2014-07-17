@@ -7,6 +7,8 @@ from elftools.common import exceptions
 import idalink, symexec
 import struct
 
+from angr import Project
+
 #hopefully the only processors we should ever have to target
 processors = ['i386', 'x86_64', 'arm', 'ppc', 'mips']
 
@@ -25,6 +27,14 @@ def Executable(filename):
 
 class _Executable():
     def iterate_instructions(self, funcaddr):
+        mark = None
+        for blockaddr in self.funcman.functions[funcaddr].basic_blocks:
+            block = self.angr.block(blockaddr)
+            block.temps = {}
+            for stmt in block.statements():
+                if stmt.tag == 'Ist_Imark': mark = stmt
+                elif stmt.tag != 'Ist_NoOp': yield (block, mark, stmt)
+
         fstart, fend = next(self.ida.idautils.Chunks(funcaddr))
         while True:
             a = self.ida.idautils.DecodeInstruction(fstart)
@@ -34,11 +44,11 @@ class _Executable():
             if fstart >= fend:
                 break
 
-    def identify_instr(self, ins):
-        self.ida.idc.OpDecimal(ins.ea, 0)
-        self.ida.idc.OpDecimal(ins.ea, 1)
-        self.ida.idc.OpDecimal(ins.ea, 2)
-        s = [self.ida.idc.GetMnem(ins.ea)] + map(lambda x: self.ida.idc.GetOpnd(ins.ea, x), xrange(6))
+    def identify_instr(self, block, addr, stmt):
+        # Process data operand
+        # Process statement destination
+        # ???
+        # Profit
         if self.identify_bp_assignment(s):
             return ('STACK_TYPE_BP', ins.Op3.value) # somewhat dangerous hack for ARM
         if self.identify_sp_assignment(s):
@@ -232,14 +242,10 @@ class ElfExecutable(_Executable):
             self.nonnative = True
         if self.nonnative:
             pass #print "Warning: analysing binary for non-native platform"
-        self.ida = idalink.IDALink(filename, "idal64" if self.is_64_bit() else "idal")
+        self.angr = Project(filename, use_sim_procedures=True)
+        self.cfg = self.angr.construct_cfg()
+        self.funcman = self.angr.get_function_manager()
         self.get_section_by_name = self.elfreader.get_section_by_name
-
-        def PatchQwordHack(ea, value):
-            self.ida.idc.PatchDword(ea, value & ((1 << 32) - 1))
-            self.ida.idc.PatchDword(ea + 4, value >> 32)
-
-        self.ida.idc.PatchQword = PatchQwordHack
 
     def is_64_bit(self):
         return self.elfreader.header.e_ident.EI_CLASS == 'ELFCLASS64'

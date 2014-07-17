@@ -12,15 +12,14 @@ def patch(infile, outfile, safe=False, verbose=1, whitelist=[], blacklist=[]):
         return
     binrepr.verbose = verbose
     binrepr.safe = safe
-    textsec = binrepr.get_section_by_name('.text')
-    textrange = (textsec.header.sh_addr, textsec.header.sh_addr + textsec.header.sh_size)
-    textfuncs = binrepr.ida.idautils.Functions(*textrange)
+    textfuncs = binrepr.funcman.keys()
     patch_data = []
-    for func in textfuncs:
+    for funcaddr in textfuncs:
+        # TODO: Do some sort of function name lookup
         if (len(whitelist) > 0 and binrepr.ida.idc.Name(func) not in whitelist) or \
            (len(blacklist) > 0 and binrepr.ida.idc.Name(func) in blacklist):
             continue
-        patch_data += patch_function(binrepr, func)
+        patch_data += patch_function(binrepr, funcaddr)
 
     if binrepr.verbose > 0:
         print 'Accumulated %d patches, %d bytes of data' % (len(patch_data), sum(map(lambda x: len(x[1]), patch_data)))
@@ -33,7 +32,8 @@ def patch(infile, outfile, safe=False, verbose=1, whitelist=[], blacklist=[]):
 
 
 def patch_function(binrepr, funcaddr):
-    if binrepr.verbose >= 0: print 'Parsing %s...' % binrepr.ida.idc.Name(funcaddr)
+    funcname = 'sub_%x' % funcaddr
+    if binrepr.verbose >= 0: print 'Parsing %s...' % funcname
     symrepr = symexec.Solver()
     binrepr.symrepr = symrepr
     bp_based = False
@@ -46,10 +46,10 @@ def patch_function(binrepr, funcaddr):
     #use_accesses = [] # the accesses that actually constitute local vars
     #addresses = set() # the stack offsets of all the accessed local vars
     variables = VarList(binrepr, 0)
-    for ins in binrepr.iterate_instructions(funcaddr):
-        typ = binrepr.identify_instr(ins)
+    for block, mark, stmt in binrepr.iterate_instructions(funcaddr):
+        typ = binrepr.identify_instr(block, mark, stmt)
         if binrepr.verbose > 2:
-            print '%0.8x:       %s' % (ins.ea, binrepr.ida.idc.GetDisasm(ins.ea))
+            stmt.pp()
         if typ[0] == '': continue
         if binrepr.verbose > 1:
             print '       %s: %s' % typ
