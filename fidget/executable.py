@@ -34,7 +34,7 @@ class _Executable():
             if fstart >= fend:
                 break
 
-    def identify_instr(self, ins):
+    def identify_instr(self, ins, variables):
         self.ida.idc.OpDecimal(ins.ea, 0)
         self.ida.idc.OpDecimal(ins.ea, 1)
         self.ida.idc.OpDecimal(ins.ea, 2)
@@ -42,37 +42,45 @@ class _Executable():
         if self.identify_bp_assignment(s):
             return ('STACK_TYPE_BP', ins.Op3.value) # somewhat dangerous hack for ARM
         if self.identify_sp_assignment(s):
-            relop = ins.Op2 if self.processor < 2 else ins.Op3
-            if relop.type != 5:     # If it's not an immediate, assume this is alloca and panic
+            relop = ins.Op2 if self.processor in (0, 1, 3) else ins.Op3
+            if relop.type not in (4,5):     # If it's not an immediate, assume this is alloca and panic
                 return ('STACK_FRAME_ALLOCA', (ins.ea, relop.n))
-            return ('STACK_FRAME_ALLOC', BinaryData(ins.ea, relop.n, \
-                    self.resign_int(relop.value), s, self))
-        if self.identify_sp_deassignment(s):
-            relop = ins.Op2 if self.processor < 2 else ins.Op3
+            sval = relop.value if self.processor in (0, 1, 2) else relop.addr
+            sval = self.resign_int(sval)
+            bdat = BinaryData(ins.ea, relop.n, sval, s, self)
+            if sval < 0:
+                bdat = BinaryDataConglomerate('negated_' + hex(ins.ea)[2:], bdat)
+                bdat.value = -bdat.value
+                bdat.symval = -bdat.symval
+            return ('STACK_FRAME_ALLOC', bdat)
+        if self.identify_sp_deassignment(s) and (self.processor != 3 or ins.Op3.addr == variables.stack_size or ins.Op3.value == variables.stack_size):
+            relop = ins.Op2 if self.processor in (0, 1) else ins.Op3
             return ('STACK_FRAME_DEALLOC', BinaryData(ins.ea, relop.n, \
                     self.resign_int(relop.value), s, self))
         if self.identify_bp_pointer(s) or self.identify_sp_pointer(s):
-            if self.identify_bp_pointer(s) and self.ida.idc.GetReg(ins.ea, 'T'):
+            if self.identify_bp_pointer(s) and self.ida.idc.GetReg(ins.ea, 'T') == 1:
                 return ('', 0)
-            reladdr = ins.Op3.value * (-1 if s[0].lower() == 'sub' else 1)
+            if ins.Op3.type != 5:
+                return ('', 0)
+            reladdr = self.resign_int(ins.Op3.value * (-1 if s[0].lower() == 'sub' else 1))
             n_ea = ins.ea
-            accumulator = BinaryDataConglomerate('complex_' + hex(n_ea)[2:], BinaryData(n_ea, 2, True, s, self))
-            if s[0].lower() in ('sub', 'subs', 'sub.w'):
+            accumulator = BinaryDataConglomerate('complex_' + hex(n_ea)[2:], BinaryData(n_ea, 2, reladdr, s, self))
+            if 'sub' in s[0].lower():
                 accumulator.value = -accumulator.value
                 accumulator.symval = -accumulator.symval
             while True:
                 n_ea = self.ida.idc.NextHead(n_ea)
                 n_mnem = self.ida.idc.GetMnem(n_ea).lower()
-                if n_mnem not in ('add', 'sub', 'adds', 'subs', 'add.w', 'sub.w'): break
+                if 'add' not in n_mnem and 'sub' not in n_mnem: break
                 if self.ida.idc.GetOpnd(n_ea, 1) != s[1]: break
                 if self.ida.idc.GetOpType(n_ea, 2) != 5: break # must be immediate value
                 if self.verbose > 1:
                     print '\t* Expanding complex pointer'
                 s[1] = self.ida.idc.GetOpnd(n_ea, 0)
-                v = self.ida.idc.GetOperandValue(n_ea, 2)
+                v = self.resign_int(self.ida.idc.GetOperandValue(n_ea, 2))
                 b = BinaryData(n_ea, 2, v, s, self) # FIXME: Send the actual right s value
                 accumulator.add(b)
-                if n_mnem in ('sub', 'subs', 'sub.w'):
+                if 'sub' in n_mnem:
                     accumulator.value -= v
                     accumulator.symval -= b.symval
                 else:
@@ -93,6 +101,8 @@ class _Executable():
                 #sanity check first
                 #if not self.sanity_check(ins.ea, opn):
                 #    continue
+                if s[opn.n+1][s[opn.n+1].find(self.get_sp()) + len(self.get_sp())] in '123456890':
+                    continue
                 return ('STACK_SP_ACCESS', BinaryData(ins.ea, opn.n, self.resign_int(opn.addr), s, self))
             elif self.get_bp() in s[opn.n+1]:
                 #if not self.sanity_check(ins.ea, opn):
@@ -109,26 +119,48 @@ class _Executable():
             return int(n)
         return int(-((n ^ top) + 1))
 
+    def ppc_sp_bullshit(self): # aaaAAAAAAAAAA *explodes in ball of ida-rage*
+        if self.processor != 3:
+            self.ppc_sp = ''
+            return
+        ea = self.elfreader.header.e_entry
+        while True:
+            op = self.ida.idc.GetOpnd(ea, 0)
+            if op in ('sp', 'r1'):
+                self.ppc_sp = op
+                return
+            op = self.ida.idc.GetOpnd(ea, 1)
+            if op in ('sp', 'r1'):
+                self.ppc_sp = op
+                return
+            ea = self.ida.idc.NextHead(ea)
+
     def identify_bp_assignment(self, s):
         return s[:3] == ['mov', 'ebp', 'esp'] or \
                 s[:3] == ['mov', 'rbp', 'rsp'] or \
-                s[:3] == ['ADD', 'R11', 'SP']
+                s[:3] == ['ADD', 'R11', 'SP'] or \
+                s[:3] == ['mr', 'r31', self.ppc_sp]
 
     def identify_sp_assignment(self, s):
         return s[:2] == ['sub', 'esp'] or \
                 s[:2] == ['sub', 'rsp'] or \
-                s[:3] == ['SUB', 'SP', 'SP']
+                s[:3] == ['SUB', 'SP', 'SP'] or \
+                (s[:2] == ['stwu', self.ppc_sp] and s[2].endswith('(%s)' % self.ppc_sp))
 
     def identify_sp_deassignment(self, s):
         return s[:2] == ['add', 'esp'] or \
                 s[:2] == ['add', 'rsp'] or \
-                s[:3] == ['ADD', 'SP', 'SP']
+                s[:3] == ['ADD', 'SP', 'SP'] or \
+                s[:3] == ['addi', 'r11', 'r31'] or \
+                s[:3] == ['addi', self.ppc_sp, self.ppc_sp]
 
     def identify_bp_pointer(self, s):
-        return (s[0] in ('SUB', 'ADD', 'SUBS', 'ADDS', 'SUB.W', 'ADD.W') and s[2] == 'R11' and s[1] != 'SP')
+        return (('SUB' in s[0] or 'ADD' in s[0]) and s[2] == 'R11' and s[1] != 'SP') or \
+                (('sub' in s[0] or 'add' in s[0]) and s[2] == 'r31' and s[1] != self.ppc_sp)
 
     def identify_sp_pointer(self, s):
-        return (s[0] in ('SUB', 'ADD', 'SUBS', 'ADDS', 'SUB.W', 'ADD.W') and s[2] == 'SP' and s[1] != 'R11')
+        return (('SUB' in s[0] or 'ADD' in s[0]) and s[2] == 'SP' and s[1] != 'R11') or \
+                (('sub' in s[0] or 'add' in s[0]) and s[2] == self.ppc_sp and s[1] != 'r31')
 
     def construct_operand_x86(self, op):
         if op.type == 3:
@@ -142,6 +174,11 @@ class _Executable():
             addr = self.resign_int(op.addr)
             if addr == 0: return '[%s]' % self.construct_register(op.reg, self.native_dtyp)
             return '[%s,#%d]' % (self.construct_register(op.reg, self.native_word), addr)
+
+    def construct_operand_ppc(self, op):
+        if op.type == 4:
+            addr = self.resign_int(op.addr)
+            return '%d(%s)' % (addr, self.construct_register(op.reg, self.native_word))
         
     def construct_register(self, reg, dtyp):
         if self.processor == 0 or self.processor == 1:
@@ -152,13 +189,15 @@ class _Executable():
             suffix = ''
         x86regs = ['ax', 'cx', 'dx', 'bx', 'sp', 'bp', 'si', 'di', '8', '9', '10', '11', '12']
         armregs = ['R0', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9', 'R10', 'R11', 'R12', 'SP', 'LR']
-        return prefix + [x86regs, x86regs, armregs][self.processor][reg] + suffix
+        ppcregs = map(lambda x: 'r%d' % x, xrange(32))
+        ppcregs[1] = self.ppc_sp
+        return prefix + [x86regs, x86regs, armregs, ppcregs][self.processor][reg] + suffix
 
     def get_sp(self):
-        return ['esp','rsp','SP'][self.processor]
+        return ['esp','rsp','SP',self.ppc_sp][self.processor]
 
     def get_bp(self):
-        return ['ebp','rbp','R11'][self.processor]
+        return ['ebp','rbp','R11','r31'][self.processor]
 
     def sanity_check(self, ea, op):
         mine = self.construct_operand(op)
@@ -193,10 +232,15 @@ class _Executable():
                 return 1
             elif 'STR' in mnem:
                 return 2
-            elif mnem in ('ADD', 'SUB'):
+            elif 'ADD' in mnem or 'SUB' in mnem:
                 return 4
             return 1
-
+        elif self.processor == 3:
+            if mnem[0] == 'l':
+                return 1
+            elif mnem[0] == 's':
+                return 2
+            return 1
 
 class ElfExecutable(_Executable):
     def __init__(self, filename):
@@ -221,6 +265,9 @@ class ElfExecutable(_Executable):
         elif elfproc == 'EM_ARM':
             self.processor = 2
             self.construct_operand = self.construct_operand_arm
+        elif elfproc == 'EM_PPC':
+            self.processor = 3
+            self.construct_operand = self.construct_operand_ppc
         else:
             raise ValueError('Unsupported processor type: %s' % elfproc)
 
@@ -240,9 +287,13 @@ class ElfExecutable(_Executable):
             self.ida.idc.PatchDword(ea + 4, value >> 32)
 
         self.ida.idc.PatchQword = PatchQwordHack
+        self.ppc_sp_bullshit()
 
     def is_64_bit(self):
         return self.elfreader.header.e_ident.EI_CLASS == 'ELFCLASS64'
+
+    def is_big_endian(self):
+        return self.elfreader.header.e_ident.EI_DATA == 'ELFDATA2MSB'
 
     def is_convention_stack_args(self):
         return self.processor == 0
@@ -480,7 +531,8 @@ class BinaryData():         # The fundemental link between binary data and thing
                     self.set_uvalue()
                     result = self.extract_bit_value(byte_offset*8, word_size)
                     if result is None: continue
-                    result = self.endian_reverse(result, word_size/8)
+                    if not self.binrepr.is_big_endian():
+                        result = self.endian_reverse(result, word_size/8)
                     if result != self.uvalue: continue
                     self.value = (1 << word_size) / 3 # TODO: Do this less hardcodedly
                     self.bit_offset = byte_offset * 8
@@ -522,6 +574,9 @@ class BinaryData():         # The fundemental link between binary data and thing
         self.restore_value()
         return True
 
+    def get_format(self, size):
+        return ('>' if self.binrepr.is_big_endian() else '<') + {1: 'B', 2: 'H', 4: 'I', 8: 'Q'}[size]
+
     def extract_bit_value(self, bit_offset, bit_length):
         if bit_offset + bit_length > len(self.insbytes) * 8:
             return None
@@ -536,25 +591,28 @@ class BinaryData():         # The fundemental link between binary data and thing
         return out
 
     def patch_value(self):
+        if self.binrepr.verbose > 2:
+            print 'Patching %d bits at bit-offset %d of %x' % (self.bit_length, self.bit_offset, self.memaddr)
         if self.bit_offset % 8 == 0 and self.bit_length % 8 == 0:
             self.set_uvalue()
-            ltodo = self.bit_length
+            pstr = struct.pack(self.get_format(self.bit_length/8), self.uvalue)
             otodo = self.bit_offset/8
-            vtodo = self.uvalue
-            while ltodo >= 32:
-                self.binrepr.ida.idc.PatchDword(self.memaddr + otodo, vtodo & 0xFFFFFFFF)
-                otodo += 4
-                ltodo -= 32
-                vtodo >>= 32
-            while ltodo > 0:
-                self.binrepr.ida.idc.PatchByte(self.memaddr + otodo, vtodo & 0xFF)
+            for byte in pstr:
+                self.binrepr.ida.idc.PatchByte(self.memaddr + otodo, ord(byte))
                 otodo += 1
-                ltodo -= 8
-                vtodo >>= 8
         else:
             raise Exception("Unaligned writes unimplemented")
 
     def get_patch_data(self):
+        self.gotime = True
+        pd = self._get_patch_data()
+        if pd[0][1] == self.insbytes:
+            if self.binrepr.verbose > 1:
+                print '** Discarded patch data for %s, no changes' % self.symval
+            return []
+        return pd
+
+    def _get_patch_data(self):
         if self.armop == 1:
             newval = self.armins & 0xFF7FF000
             newimm = self.symrepr.eval(self.symval).as_long()
@@ -659,27 +717,22 @@ class BinaryData():         # The fundemental link between binary data and thing
         elif self.bit_offset % 8 == 0 and self.bit_length % 8 == 0:
             self.set_uvalue()
             outs = [x for x in self.insbytes]
-            ltodo = self.bit_length
             otodo = self.bit_offset/8
-            vtodo = self.uvalue
-            while ltodo > 0:
-                outs[otodo] = chr(vtodo & 0xFF)
+            pstr = struct.pack(self.get_format(self.bit_length/8), self.uvalue)
+            for byte in pstr:
+                outs[otodo] = byte
                 otodo += 1
-                ltodo -= 8
-                vtodo >>= 8
             return [(self.physaddr, ''.join(outs))]
         else:
             raise Exception("Unaligned writes unimplemented")
 
     def restore_value(self):
+        if self.binrepr.verbose > 2:
+            print 'restoring %d bytes at %x' % (len(self.insbytes), self.memaddr)
         self.value = self.ovalue
         ptr = self.memaddr
         bts = self.insbytes
-        while len(bts) >= 4:
-            self.binrepr.ida.idc.PatchDword(ptr, struct.unpack('I', bts[:4])[0])
-            bts = bts[4:]
-            ptr += 4
-        for char in bts:
+        for char in bts: # Can't optimize with dwords, endians :/
             self.binrepr.ida.idc.PatchByte(ptr, ord(char))
             ptr += 1
 

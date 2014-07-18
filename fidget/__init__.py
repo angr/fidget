@@ -41,22 +41,21 @@ def patch_function(binrepr, funcaddr):
     bp_offset = 0     # in some cases the base pointer will be at a different place than size bytes from sp
     alloc_ops = []    # the instruction(s???) that performs a stack allocation
     dealloc_ops = []  # the instructions that perform a stack deallocation
-    #bp_accesses = []  # the stack accesses using the base pointer
-    #sp_accesses = []  # the stack accesses using the stack pointer
-    #use_accesses = [] # the accesses that actually constitute local vars
-    #addresses = set() # the stack offsets of all the accessed local vars
     variables = VarList(binrepr, 0)
     for ins in binrepr.iterate_instructions(funcaddr):
-        typ = binrepr.identify_instr(ins)
         if binrepr.verbose > 2:
             print '%0.8x:       %s' % (ins.ea, binrepr.ida.idc.GetDisasm(ins.ea))
+        typ = binrepr.identify_instr(ins, variables)
         if typ[0] == '': continue
         if binrepr.verbose > 1:
             print '       %s: %s' % typ
 
         if typ[0] == 'STACK_TYPE_BP':
             bp_based = True
-            bp_offset = typ[1]
+            if typ[1] == 'ppc':
+                bp_offset = -variables.stack_size
+            else:
+                bp_offset = typ[1]
 
         elif typ[0] == 'STACK_FRAME_ALLOC':
             if len(variables) > 0: # allow multiple allocs because ARM has limited immediates
@@ -92,6 +91,13 @@ def patch_function(binrepr, funcaddr):
                 return []
             if not bp_based:
                 continue        # silently ignore bp access in sp frame
+            if binrepr.processor == 3:
+                offset = binrepr.ida.idc.GetSpd(ins.ea) + variables.stack_size + size_offset if size_offset is not None else 0
+                if offset + typ[1].value < 0:
+                    if binrepr.verbose > 0: print '\t*** Warning (%x): Function appears to be accessing above its stack frame, discarding instruction' % ins.ea
+                    continue
+                Access(typ[1], False, offset, binrepr, variables)
+                
             if typ[1].value > 0:
                 continue        # this is one of the function's arguments
             Access(typ[1], True, bp_offset, binrepr, variables)
