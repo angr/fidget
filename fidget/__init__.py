@@ -38,25 +38,18 @@ def patch_function(binrepr, funcaddr):
     binrepr.symrepr = symrepr
     bp_based = False
     size_offset = None
-    bp_offset = 0     # in some cases the base pointer will be at a different place than size bytes from sp
-    alloc_ops = []    # the instruction(s???) that performs a stack allocation
+    alloc_op = None   # the instruction that performs a stack allocation
     dealloc_ops = []  # the instructions that perform a stack deallocation
-    #bp_accesses = []  # the stack accesses using the base pointer
-    #sp_accesses = []  # the stack accesses using the stack pointer
-    #use_accesses = [] # the accesses that actually constitute local vars
-    #addresses = set() # the stack offsets of all the accessed local vars
     variables = VarList(binrepr, 0)
-    for block, mark, stmt in binrepr.iterate_instructions(funcaddr):
-        typ = binrepr.identify_instr(block, mark, stmt)
+    for tag, bindata in binrepr.find_tags(funcaddr):
         if binrepr.verbose > 2:
             stmt.pp()
-        if typ[0] == '': continue
+        if tag == '': continue
         if binrepr.verbose > 1:
-            print '       %s: %s' % typ
+            print '       %8.0x: %s' % (binrepr.memaddr, tag)
 
-        if typ[0] == 'STACK_TYPE_BP':
+        if tag == 'STACK_TYPE_BP':
             bp_based = True
-            bp_offset = typ[1]
 
         elif typ[0] == 'STACK_FRAME_ALLOC':
             if len(variables) > 0: # allow multiple allocs because ARM has limited immediates
@@ -69,7 +62,7 @@ def patch_function(binrepr, funcaddr):
 
         elif typ[0] == 'STACK_FRAME_DEALLOC':
             dealloc_ops.append(typ[1])
-            if typ[1].value != variables.stack_size:  # I don't think there are manual deallocs on ARM!
+            if typ[1].value != variables.stack_size:
                 print '\t*** CRITICAL (%x): Stack dealloc does not match alloc??\n' % ins.ea
                 return []
 
@@ -83,15 +76,15 @@ def patch_function(binrepr, funcaddr):
                 continue
             #if offset + typ[1].value > variables.stack_size:
             #    continue        # this is one of the function's arguments
-            # Do not filter out args to the next function here because we need to have everythign first
+            # Do not filter out args to the next function here because we need to have everything first
             Access(typ[1], False, offset, binrepr, variables)
 
         elif typ[0] == 'STACK_BP_ACCESS':
+            if not bp_based:
+                continue        # silently ignore bp access in sp frame
             if variables.stack_size == 0:
                 if binrepr.verbose > 0: print '\tFunction does not appear to have a stack frame (2)\n'
                 return []
-            if not bp_based:
-                continue        # silently ignore bp access in sp frame
             if typ[1].value > 0:
                 continue        # this is one of the function's arguments
             Access(typ[1], True, bp_offset, binrepr, variables)
