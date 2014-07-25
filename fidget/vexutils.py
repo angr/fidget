@@ -1,9 +1,13 @@
-# These are a giant mess of utility functions to make dealing with comparisons
-# between vex structs. The most important are by far the equals and equals_except functions
+import symexec
+import os
+
+# These are a giant mess of utility functions that are used in multiple spots.
+# A lot are only good to make dealing with comparisons between vex structs tolerable.
 
 # equals
 # Compares two vex structs.
 # it should be able to handle any two Statement or Expression structs.
+# Disregards differences in temp numbers and IMark addresses.
 
 def equals(a, b):
     if a.tag != b.tag: return False
@@ -12,23 +16,23 @@ def equals(a, b):
     elif a.tag == 'Ist_IMark':
         return a.len == b.len
     elif a.tag == 'Ist_WrTmp':
-        return a.tmp == b.tmp and equals(a.data, b.data)
+        return equals(a.data, b.data)
     elif a.tag == 'Ist_Store':
         return equals(a.addr, b.addr) and equals(a.data, b.data)
     elif a.tag == 'Ist_Put':
         return a.offset == b.offset and equals(a.data, b.data)
     elif a.tag == 'Iex_Get':
         return a.offset == b.offset
-    elif a.tag == 'Iex_BinOp':
-        return a.op == b.op and equals(a.arg1, b.arg1) and equals(a.arg2, b.arg2)
     elif a.tag == 'Iex_RdTmp':
-        return a.tmp == b.tmp
+        return True
     elif a.tag == 'Iex_Const':
         return a.con.value == b.con.value
     elif a.tag == 'Iex_Load':
         return equals(a.addr, b.addr)
     elif a.tag == 'Iex_Unop':
         return a.op == b.op and equals(a.arg1, b.arg1)
+    elif a.tag == 'Iex_Binop':
+        return a.op == b.op and equals(a.arg1, b.arg1) and equals(a.arg2, b.arg2)
     elif a.tag == 'Iex_Triop':
         return a.op == b.op and equals(a.arg1, b.arg1) and equals(a.arg2, b.arg2) and equals(a.arg3, b.arg3)
     else:
@@ -41,26 +45,32 @@ def equals(a, b):
 # Horriby hackish, but I'm not sure how else to do it :/
 
 def get_from_path(obj, path):
+    return _get_from_path(obj, list(path))  # make a copy of the path so it can be mutilated
+
+def _get_from_path(obj, path):
     if len(path) == 0: return obj
     key = path.pop(0)
     if type(key) == int or type(obj) == dict:
         if key not in obj: return None
-        return get_from_path(obj[key], path)
+        return _get_from_path(obj[key], path)
     if not hasattr(obj, key): return None
-    return get_from_path(getattr(obj, key), path)
+    return _get_from_path(getattr(obj, key), path)
 
 def set_from_path(obj, path, value):
+    return _set_from_path(obj, list(path), value)
+
+def _set_from_path(obj, path, value):
     key = path.pop(0)
     if type(key) == int or type(obj) == dict:
         if path == []:
             obj[key] = value
         else:
-            set_from_path(obj[key], path, value)
+            _set_from_path(obj[key], path, value)
     else:
         if path == []:
             setattr(obj, key, value)
         else:
-            set_from_path(getattr(obj, key), path)
+            _set_from_path(getattr(obj, key), path, value)
 
 # equals_except
 # pass it two pyvex objects, a path (for the above functions), and a value
@@ -75,3 +85,39 @@ def equals_except(a, b, path, val):
     result = equals(a, b)
     set_from_path(a, path, oldval)
     return result
+
+# get_stmt_num
+# pass it a pyvex IRSB and a number-- it'll pull out the nth statement after 
+# the first Imark. Useful for when you're got an unoptimized pyvex and there 
+# are frigging no-ops everywhere.
+
+def get_stmt_num(block, n):
+    stmt_iterator = iter(block.statements())
+    for stmt in stmt_iterator:
+        if stmt.tag == 'Ist_IMark':
+            break
+    i = 0
+    for stmt in stmt_iterator:
+        if i == n:
+            return stmt
+        i += 1
+
+def ZExtTo(size, vec):
+    return ExtTo(size, vec, symexec.ZeroExt)
+
+def SExtTo(size, vec):
+    return ExtTo(size, vec, symexec.SignExt)
+
+def ExtTo(size, vec, func):
+    if type(vec) in (int, long): return vec
+    if vec.size() > size:
+        return symexec.Extract(size-1, 0, vec)
+    return vec if vec.size() == size else func(size - vec.size(), vec)
+
+def columnize(data):
+    open('.coldat','w').write('\n'.join(data))
+    _, columns = os.popen('stty size').read().split()
+    os.system('column -c %d < .coldat 2>/dev/null' % int(columns))
+
+def extract_int(s):
+    return int(''.join(d for d in s if d.isdigit()))
