@@ -38,15 +38,13 @@ def patch(infile, outfile, safe=False, verbose=1, whitelist=[], blacklist=[]):
 def patch_function(binrepr, funcaddr):
     symrepr = symexec.Solver()
     binrepr.symrepr = symrepr
-    bp_based = False
-    size_offset = None
     alloc_op = None   # the instruction that performs a stack allocation
     dealloc_ops = []  # the instructions that perform a stack deallocation
     variables = VarList(binrepr, 0)
     for tag, bindata in binrepr.find_tags(funcaddr):
         if tag == '': continue
         if binrepr.verbose > 1:
-            print '\t%8.0x: %s' % (bindata.memaddr, tag)
+            print '\t%8.0x    %s: %s' % (bindata.memaddr, tag, hex(bindata.value))
 
         if tag == 'STACK_ALLOC':
             #if len(variables) > 0: # allow multiple allocs because ARM has limited immediates
@@ -96,10 +94,10 @@ def patch_function(binrepr, funcaddr):
     if num_vars > 0:
         if binrepr.verbose > 0:
             num_accs = variables.num_accesses()
-            print '''\tFunction has a %s-based stack frame of %d bytes.
+            print '''\tFunction has a stack frame of %d bytes.
 \t%d access%s to %d address%s %s made.
 \tThere is %s deallocation.''' % \
-            ('bp' if bp_based else 'sp', variables.stack_size, 
+            (variables.stack_size, 
             num_accs, '' if num_accs == 1 else 'es',
             num_vars, '' if num_vars == 1 else 'es',
             'is' if num_accs == 1 else 'are',

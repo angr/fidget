@@ -84,6 +84,8 @@ class BlockState:
             self.access(addr_expr, AccessType.WRITE)
             if addr_expr.stack_addr:
                 self.stack_cache[addr_expr.cleanval] = expression
+            if expression.stack_addr:
+                self.access(expression, AccessType.POINTER)
 
     def end(self):
         for offset, value in self.regs.iteritems():
@@ -127,7 +129,7 @@ class SmartExpression:
             for i, expr in enumerate(vexpression.args()):
                 self.deps.append(SmartExpression(blockstate, expr, mark, path + ['arg%d' % (i+1)]))
             opsize = vexutils.extract_int(vexpression.op)
-            if vexpression.op == 'Iop_64to1':
+            if vexpression.op.endswith('to1'):
                 if self.deps[0].cleanval != 0:
                     self.cleanval = 1
                 self.dirtyval = 0 # TODO: ????
