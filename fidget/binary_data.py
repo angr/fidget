@@ -1,5 +1,5 @@
 import struct
-import pyvex
+import pyvex, claripy
 import vexutils
 
 # BinaryData
@@ -24,9 +24,10 @@ class BinaryData():
         self.memaddr = mark.addr
         self.physaddr = binrepr.relocate_to_physaddr(self.memaddr)
 
+        self.armthumb = binrepr.processor == 2 and self.binrepr.angr.main_binary.ida.idc.GetReg(self.memaddr, "T") == 1
         binrepr.filestream.seek(self.physaddr)
         self.insbytes = binrepr.filestream.read(self.inslen)
-        self.insvex = self.binrepr.make_irsb(self.insbytes)
+        self.insvex = self.binrepr.make_irsb(self.insbytes, self.armthumb)
 
         self.signed = True          # TODO: Figure out if this property can be axed totally
         self.modconstraint = 1
@@ -48,7 +49,7 @@ class BinaryData():
                 self.constraints.append(self.symval % self.modconstraint == 0)
 
     def apply_constraints(self, symrepr):
-        if self.symval.decl().name() in symrepr.variables:
+        if list(self.symval.variables)[0] in symrepr.variables:
             return
         for constraint in self.constraints:
             symrepr.add(constraint)
@@ -66,7 +67,6 @@ class BinaryData():
                 self.armins = struct.unpack('H', self.insbytes)[0]
             else:
                 raise Exception("Holy crap ARM what???")
-            self.armthumb = self.binrepr.angr.ida.idc.GetReg(self.memaddr, "T") == 1
             if not self.armthumb and self.armins & 0x0C000000 == 0x04000000:
                 # LDR
                 self.armop = 1
@@ -83,10 +83,10 @@ class BinaryData():
                 thoughtval &= 0xFFFFFFFF
                 if thoughtval != self.value:
                     raise BinaryData.ValueNotFoundException
-                self.bit_shift = symexec.BitVec(hex(self.memaddr)[2:] + '_shift', 4)
-                #self.symval = symexec.BitVec(hex(self.memaddr)[2:] + '_imm', 32)
-                self.symval8 = symexec.BitVec(hex(self.memaddr)[2:] + '_imm8', 8)
-                self.constraints.append(self.symval == symexec.RotateRight(symexec.ZeroExt(32-8, self.symval8), symexec.ZeroExt(32-4, self.bit_shift)*2))
+                self.bit_shift = self.binrepr.claripy.BitVec(hex(self.memaddr)[2:] + '_shift', 4)
+                #self.symval = self.binrepr.claripy.BitVec(hex(self.memaddr)[2:] + '_imm', 32)
+                self.symval8 = self.binrepr.claripy.BitVec(hex(self.memaddr)[2:] + '_imm8', 8)
+                self.constraints.append(self.symval == self.binrepr.claripy.RotateRight(self.symval8.zero_extend(32-8), self.bit_shift.zero_extend(32-4)*2))
             elif not self.armthumb and self.armins & 0x0E400090 == 0x00400090:
                 # LDRH
                 self.armop = 3
@@ -160,7 +160,7 @@ class BinaryData():
                 if self.armins & 0x70000400:
                     # stupid cases-- do not touch
                     self.armop = 12
-                    #self.symval = symexec.BitVec(hex(self.memaddr)[2:] + '_' + str(self.opn) + '_nope', self.bit_length)
+                    #self.symval = self.binrepr.claripy.BitVec(hex(self.memaddr)[2:] + '_' + str(self.opn) + '_nope', self.bit_length)
                     self.constraints.append(self.symval == self.value)
                 else:
                     self.armop = 11
@@ -190,6 +190,7 @@ class BinaryData():
                 if thoughtval != self.value:
                     raise BinaryData.ValueNotFoundException
             else:
+                raise BinaryData.ValueNotFoundException
                 raise Exception("(%x) Unsupported ARM instruction!" % self.memaddr)
             if not self.sanity_check():
                 raise BinaryData.ValueNotFoundException
@@ -219,7 +220,7 @@ class BinaryData():
         m = self.path[:]
         basic = vexutils.get_from_path(vexutils.get_stmt_num(self.insvex, m[0]), m[1:])
         if basic is None:
-            import pdb; pdb.set_trace()
+            import ipdb; ipdb.set_trace()
             raise Exception("This is a problem")
         m[-1] = 'type'
         size = vexutils.get_from_path(vexutils.get_stmt_num(self.insvex, m[0]), m[1:])
@@ -227,12 +228,11 @@ class BinaryData():
         if self.binrepr.resign_int(basic, size) != self.value:
             raise Exception("Failed basic existance assertion..?")
             return False
-        #import pdb; pdb.set_trace()
         # Get challengers
         tog = self.get_range()
 
         # Round 1
-        newblock = self.binrepr.make_irsb(self.get_patched_instruction(tog[0]))
+        newblock = self.binrepr.make_irsb(self.get_patched_instruction(tog[0]), self.armthumb)
         i = None
         for oldstmt, newstmt in zip(self.insvex.statements(), newblock.statements()):
             if i == self.path[0]:
@@ -248,7 +248,7 @@ class BinaryData():
                 i += 1
 
         # Round 2
-        newblock = self.binrepr.make_irsb(self.get_patched_instruction(tog[1]-1))
+        newblock = self.binrepr.make_irsb(self.get_patched_instruction(tog[1]-1), self.armthumb)
         i = None
         for oldstmt, newstmt in zip(self.insvex.statements(), newblock.statements()):
             if i == self.path[0]:
@@ -282,8 +282,8 @@ class BinaryData():
     def get_patch_data(self, symrepr):
         if self.constant:
             return []
-        val = symrepr.eval(self.symval)
-        val = self.binrepr.resign_int(val.as_long(), val.size())
+        val = symrepr.any_value(self.symval)
+        val = self.binrepr.resign_int(val.value, val.size())
         patch = self.get_patched_instruction(val)
         if patch == self.insbytes:
             return []
@@ -299,18 +299,19 @@ class BinaryData():
             return struct.pack('I', newval)
         elif self.armop == 2:
             newval = self.armins & 0xFFFFF000
-            symrepr = symexec.Solver()
+            clrp = claripy.ClaripyStandalone()
+            symrepr = clrp.solver()
             self.apply_constraints(symrepr)
             symrepr.add(self.symval == value)
-            newimm = symrepr.eval(self.symval8).as_long()
+            newimm = symrepr.any_value(self.symval8).value
             newimm = self.binrepr.resign_int(newimm)
-            newshift = symrepr.eval(self.bit_shift).as_long()
+            newshift = symrepr.any_value(self.bit_shift).value
             newval |= newshift << 8
             newval |= newimm
             return struct.pack('I', newval)
         elif self.armop == 3:
             newval = self.armins & 0xFF7FF0F0
-            newimm = self.binrepr.resign_int(newimm)
+            newimm = self.binrepr.resign_int(value)
             if newimm > 0:
                 newval |= 0x00800000
             newimm = abs(newimm)
@@ -404,7 +405,7 @@ class BinaryData():
         if self.armop == 1:
            return (-0xFFF, 0x1000)
         elif self.armop == 2:
-            return (0, 0xFF000000)
+            return (0, 0xFF000001)
         elif self.armop in (3, 9):
             return (-0xFF, 0x100)
         elif self.armop in (4, 8, 14):

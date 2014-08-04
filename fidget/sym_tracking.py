@@ -1,7 +1,7 @@
 # Home of the BlockState and SmartExpression classes
 # Basically stuff for tracking data flow through a basic block and generating tags for it
 
-import symexec
+import claripy
 import vexutils
 from binary_data import BinaryData, BinaryDataConglomerate
 
@@ -35,6 +35,8 @@ class BlockState:
         s = self.binrepr.angr.arch.sp_offset
         out.regs[s] = self.regs[s]
         b = self.binrepr.angr.arch.bp_offset
+        if self.binrepr.processor == 3:
+            b = 140 # On PPC, make sure to copy over r31
         if b in self.regs and self.regs[b].stack_addr:
             out.regs[b] = self.regs[b]
         return out
@@ -52,12 +54,15 @@ class BlockState:
             if addr.cleanval in self.stack_cache:
                 return self.stack_cache[addr.cleanval]
             return ConstExpression()
-        physaddr = self.binrepr.relocate_to_physaddr(addr.cleanval)
-        if physaddr is None:
-            return ConstExpression()    # TODO: Maybe keep track of interesting addresses
-        import struct
-        self.binrepr.filestream.seek(physaddr)
-        return ConstExpression(self.binrepr.unpack_format(self.binrepr.filestream.read(size), size))
+        if addr.cleanval in self.binrepr.angr.main_binary.ida.mem:
+            strval = ''.join(self.binrepr.angr.main_binary.ida.mem[addr.cleanval + i] for i in xrange(size))
+            return ConstExpression(self.binrepr.unpack_format(strval, size))
+        #physaddr = self.binrepr.relocate_to_physaddr(addr.cleanval)
+        #if physaddr is None:
+        #    return ConstExpression()
+        #self.binrepr.filestream.seek(physaddr)
+        #return ConstExpression(self.binrepr.unpack_format(self.binrepr.filestream.read(size), size))
+        return ConstExpression()
 
     def set_ip(self, addr):
         self.regs[self.binrepr.angr.arch.ip_offset] = ConstExpression(addr)
@@ -119,11 +124,16 @@ class SmartExpression:
                 vexpression = vexpression.con
             size = vexutils.extract_int(vexpression.tag)
             self.cleanval = self.blockstate.binrepr.resign_int(vexpression.value, size)
-            self.dirtyval = symexec.BitVec('%x_%d' % (mark.addr, path[0]), size)
+            self.dirtyval = self.blockstate.binrepr.claripy.BitVec('%x_%d' % (mark.addr, path[0]), size)
             self.rootval = True
         elif vexpression.tag == 'Iex_ITE':
-            self.copy_to_self(SmartExpression(blockstate, vexpression.iffalse, mark, path + ['iffalse']))
-            SmartExpression(blockstate, vexpression.iftrue, mark, path + ['iftrue'])
+            false_expr = SmartExpression(blockstate, vexpression.iffalse, mark, path + ['iffalse'])
+            truth_expr = SmartExpression(blockstate, vexpression.iftrue, mark, path + ['iftrue'])
+
+            if truth_expr.stack_addr:
+                self.copy_to_self(truth_expr)
+            else:
+                self.copy_to_self(false_expr)
             SmartExpression(blockstate, vexpression.cond, mark, path + ['cond'])
         elif vexpression.tag in ('Iex_Unop','Iex_Binop','Iex_Triop','Iex_Qop'):
             for i, expr in enumerate(vexpression.args()):
@@ -133,14 +143,23 @@ class SmartExpression:
                 if self.deps[0].cleanval != 0:
                     self.cleanval = 1
                 self.dirtyval = 0 # TODO: ????
-            elif vexpression.op in ('Iop_Sub64', 'Iop_Sub32', 'Iop_Sub8'):
+            elif vexpression.op.startswith('Iop_Not'):
+                self.cleanval = self.deps[0].cleanval ^ ((1 << opsize) - 1)
+                self.dirtyval = ~self.deps[0].dirtyval
+            elif vexpression.op.startswith('Iop_Sub'):
                 self.cleanval = self.deps[0].cleanval - self.deps[1].cleanval
                 self.dirtyval = self.deps[0].dirtyval - self.deps[1].dirtyval
                 self.stack_addr = self.deps[0].stack_addr and not self.deps[1].stack_addr
-            elif vexpression.op in ('Iop_Add64', 'Iop_Add32', 'Iop_Add8'):
+            elif vexpression.op.startswith('Iop_Add'):
                 self.cleanval = self.deps[0].cleanval + self.deps[1].cleanval
                 self.dirtyval = self.deps[0].dirtyval + self.deps[1].dirtyval
                 self.stack_addr = self.deps[0].stack_addr or self.deps[1].stack_addr
+            elif vexpression.op.startswith('Iop_Mul'):
+                self.cleanval = self.deps[0].cleanval * self.deps[1].cleanval
+                self.dirtyval = self.deps[0].dirtyval * self.deps[1].dirtyval
+            elif vexpression.op.startswith('Iop_Div'):
+                self.cleanval = self.deps[0].cleanval * self.deps[1].cleanval
+                self.dirtyval = self.deps[0].dirtyval * self.deps[1].dirtyval
             elif vexpression.op in ('Iop_And64', 'Iop_And32', 'Iop_And8'):
                 self.shield_constants(self.deps)
                 self.cleanval = self.deps[0].cleanval & self.deps[1].cleanval
@@ -157,34 +176,67 @@ class SmartExpression:
             elif vexpression.op in ('Iop_Shl64', 'Iop_Shl32'):
                 self.cleanval = self.deps[0].cleanval << self.deps[1].cleanval
                 self.dirtyval = self.deps[0].dirtyval << vexutils.ZExtTo(opsize, self.deps[1].dirtyval)
-                self.stack_addr = False
-            elif vexpression.op in ('Iop_Shr64', 'Iop_Shr32'):
+            elif vexpression.op in ('Iop_Sar64', 'Iop_Sar32'):
                 self.cleanval = self.deps[0].cleanval << self.deps[1].cleanval
                 self.dirtyval = self.deps[0].dirtyval << vexutils.ZExtTo(opsize, self.deps[1].dirtyval)
-                self.stack_addr = False
+            elif vexpression.op in ('Iop_Shr64', 'Iop_Shr32'):
+                self.cleanval = self.deps[0].cleanval << self.deps[1].cleanval
+                if type(self.deps[0].dirtyval) in (int, long) or type(self.deps[1].dirtyval) in (int, long):
+                    self.dirtyval = self.deps[0].dirtyval << self.deps[1].dirtyval
+                else:
+                    self.dirtyval = self.blockstate.binrepr.claripy.LShR(self.deps[0].dirtyval, vexutils.ZExtTo(opsize, self.deps[1].dirtyval))
+            elif vexpression.op in ('Iop_1Uto64', 'Iop_1Uto32', 'Iop_1Uto16', 'Iop_1Uto8'):
+                pass # Why does this even
+            elif vexpression.op in ('Iop_64to8', 'Iop_32to8', 'Iop_16to8'):
+                self.cleanval = self.deps[0].cleanval
+                self.dirtyval = vexutils.ZExtTo(8, self.deps[0].dirtyval)
+            elif vexpression.op in ('Iop_32to16',):
+                self.cleanval = self.deps[0].cleanval
+                self.dirtyval = vexutils.ZExtTo(16, self.deps[0].dirtyval)
             elif vexpression.op in ('Iop_64to32', 'Iop_8Uto32'):
                 self.cleanval = self.deps[0].cleanval
                 self.dirtyval = vexutils.ZExtTo(32, self.deps[0].dirtyval)
-                self.stack_addr = False
-            elif vexpression.op in ('Iop_32Uto64', 'Iop_8Uto64'):
+            elif vexpression.op in ('Iop_32Uto64', 'Iop_16Uto32', 'Iop_8Uto64'):
                 self.cleanval = self.deps[0].cleanval
                 self.dirtyval = vexutils.ZExtTo(64, self.deps[0].dirtyval)
-                self.stack_addr = False
-            elif vexpression.op in ('Iop_8Sto32',):
+            elif vexpression.op in ('Iop_16Sto32', 'Iop_8Sto32'):
                 self.cleanval = self.deps[0].cleanval
                 self.dirtyval = vexutils.SExtTo(32, self.deps[0].dirtyval)
-                self.stack_addr = False
             elif vexpression.op in ('Iop_32Sto64',):
                 self.cleanval = self.deps[0].cleanval
                 self.dirtyval = vexutils.SExtTo(64, self.deps[0].dirtyval)
-                self.stack_addr = False
+            elif vexpression.op in ('Iop_64HIto32',):
+                self.cleanval = self.deps[0].cleanval >> 32
+                self.dirtyval = self.deps[0].dirtyval >> 32 if type(self.deps[0].dirtyval) in (int, long) else self.deps[0].dirtyval[63:32]
+            elif vexpression.op == 'Iop_32HLto64':
+                self.cleanval = (self.deps[0].cleanval << 32) | self.deps[1].cleanval
+                a1 = vexutils.ZExtTo(64, self.deps[0].dirtyval)
+                a2 = vexutils.ZExtTo(64, self.deps[1].dirtyval)
+                self.dirtyval = (a1 << 32) | a2
             elif 'Cmp' in vexpression.op:
                 self.cleanval = 0
                 self.dirtyval = 0
-                self.stack_addr = False
                 self.deps = []
+            elif vexpression.op.startswith('Iop_Clz'):
+                self.cleanval = 0
+                tmp_clean = self.deps[0].cleanval
+                for _ in xrange(opsize):
+                    tmp_clean <<= 1
+                    if tmp_clean >= (1 << opsize):
+                        break
+                    self.cleanval += 1
+                self.dirtyval = 0 # Nope, fuck this
+            elif vexpression.op.startswith('Iop_Ctz'):
+                self.cleanval = 0
+                tmp_clean = self.deps[0].cleanval
+                for _ in xrange(opsize):
+                    if tmp_clean % 2 == 1:
+                        break
+                    tmp_clean >>= 1
+                    self.cleanval += 1
+                self.dirtyval = 0 # Again with the Fucking of This
+
             else:
-                import pdb; pdb.set_trace()
                 raise Exception('Unknown operator (%x): "%s"' % (mark.addr, vexpression.op))
         elif vexpression.tag == 'Iex_CCall':
             pass

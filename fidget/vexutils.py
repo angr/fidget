@@ -1,4 +1,3 @@
-import symexec
 import os
 
 # These are a giant mess of utility functions that are used in multiple spots.
@@ -35,8 +34,12 @@ def equals(a, b):
         return a.op == b.op and equals(a.arg1, b.arg1) and equals(a.arg2, b.arg2)
     elif a.tag == 'Iex_Triop':
         return a.op == b.op and equals(a.arg1, b.arg1) and equals(a.arg2, b.arg2) and equals(a.arg3, b.arg3)
+    elif a.tag == 'Iex_CCall':
+        return True     # Nope.
+    elif a.tag == 'Iex_ITE':
+        return equals(a.iftrue, b.iftrue) and equals(a.iffalse, b.iffalse) and equals(a.cond, b.cond)
     else:
-        raise Exception("Unknown tag: %s" % a.tag)
+        raise Exception("Unknown tag (comparison): %s" % a.tag)
 
 # {get,set}_from_path
 # pass it any python objects and a list of keys
@@ -103,16 +106,17 @@ def get_stmt_num(block, n):
         i += 1
 
 def ZExtTo(size, vec):
-    return ExtTo(size, vec, symexec.ZeroExt)
+    if type(vec) in (int, long): return vec
+    return ExtTo(size, vec, vec.zero_extend)
 
 def SExtTo(size, vec):
-    return ExtTo(size, vec, symexec.SignExt)
+    if type(vec) in (int, long): return vec
+    return ExtTo(size, vec, vec.sign_extend)
 
 def ExtTo(size, vec, func):
-    if type(vec) in (int, long): return vec
     if vec.size() > size:
-        return symexec.Extract(size-1, 0, vec)
-    return vec if vec.size() == size else func(size - vec.size(), vec)
+        return vec[size-1:0]
+    return vec if vec.size() == size else func(size - vec.size())
 
 def columnize(data):
     open('.coldat','w').write('\n'.join(data))

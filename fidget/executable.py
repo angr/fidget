@@ -4,7 +4,7 @@
 from elftools.elf.elffile import ELFFile
 from elftools.elf.descriptions import describe_e_machine
 from elftools.common import exceptions
-import symexec, pyvex
+import pyvex
 import struct
 
 from angr import Project
@@ -13,7 +13,7 @@ from sym_tracking import BlockState, SmartExpression
 import vexutils
 
 #hopefully the only processors we should ever have to target
-processors = ['X86', 'AMD64', 'ARM', 'PPC32', 'mips']
+processors = ['X86', 'AMD64', 'ARM', 'PPC32', 'MIPS32']
 
 word_size = {0: 1, 1: 2, 2: 4, 7: 8}
 dtyp_by_width = {8: 0, 16: 1, 32: 2, 64: 7}
@@ -80,6 +80,19 @@ class _Executable:
                     SmartExpression(blockstate, stmt.guard, mark, [pathindex, 'guard'])
                     SmartExpression(blockstate, stmt.alt, mark, [pathindex, 'alt'])
 
+                elif stmt.tag == 'Ist_StoreG':
+                    # Conditional store
+                    addr_expr = SmartExpression(blockstate, stmt.addr, mark, [pathindex, 'addr'])
+                    value_expr = SmartExpression(blockstate, stmt.data, mark, [pathindex, 'data'])
+                    blockstate.access(addr_expr, 2)
+                    if addr_expr.stack_addr:
+                        blockstate.stack_cache[addr_expr.cleanval] = value_expr
+                    if value_expr.stack_addr:
+                        blockstate.access(value_expr, 4)
+
+                    SmartExpression(blockstate, stmt.guard, mark, [pathindex, 'guard'])
+
+
                 else:
                     stmt.pp()
                     import pdb; pdb.set_trace()
@@ -88,7 +101,8 @@ class _Executable:
             # The last argument is wrong but I dont't think it matters
             if block.jumpkind == 'Ijk_Boring':
                 dest = SmartExpression(blockstate, block.next, mark, [pathindex, 'next'])
-                queue.append(blockstate.copy(dest.cleanval))
+                if dest.cleanval not in self.angr.sim_procedures:
+                    queue.append(blockstate.copy(dest.cleanval))
             elif block.jumpkind in ('Ijk_Ret', 'Ijk_NoDecode'):
                 pass
             elif block.jumpkind == 'Ijk_Call':
@@ -111,8 +125,13 @@ class _Executable:
             for tag in blockstate.tags:
                 yield tag
 
-    def make_irsb(self, bytes):
-        return pyvex.IRSB(bytes=bytes, arch=self.angr.arch.vex_arch)
+    def make_irsb(self, bytes, thumb=False):
+        offset = 0
+        addr = 0
+        if thumb:
+            addr += 1
+            offset += 1
+        return pyvex.IRSB(bytes=bytes, arch=self.angr.arch.vex_arch, bytes_offset=offset, mem_addr=addr)
 
     def resign_int(self, n, word_size=None):
         if word_size is None: word_size = self.native_word
@@ -170,10 +189,13 @@ class ElfExecutable(_Executable):
             self.processor = 2
         elif elfproc == 'EM_PPC':
             self.processor = 3
+        elif elfproc == 'EM_MIPS':
+            self.processor = 4
         else:
             raise ValueError('Unsupported processor type: %s' % elfproc)
 
-        self.angr = Project(filename, use_sim_procedures=True, arch=processors[self.processor])
+        self.angr = Project(filename, use_sim_procedures=True, arch=processors[self.processor],
+                exclude_sim_procedure=lambda x: x not in ('__libc_start_main',))
         self.cfg = self.angr.construct_cfg()
         self.funcman = self.cfg.get_function_manager()
 

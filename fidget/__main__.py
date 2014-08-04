@@ -66,7 +66,7 @@ Safety:
     modify or leak other stack variables.
 """ % sys.argv[0]
 
-if __name__ == '__main__':
+def main():
     if len(sys.argv) < 2:
         usage()
     else:
@@ -93,6 +93,11 @@ if __name__ == '__main__':
         infiles = options['infiles']
         del options['outfiles']
         del options['infiles']
+        import logging
+        logging.basicConfig(level=10*(5-options['verbose']))
         outfiles += [None] * (len(infiles) - len(outfiles))
         for infile, outfile in zip(infiles, outfiles):
             patch(infile, outfile, **options)
+
+if __name__ == '__main__':
+    main()

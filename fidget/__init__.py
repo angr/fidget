@@ -2,7 +2,7 @@ import sys, os
 import executable, vexutils
 from binary_patch import binary_patch
 import bisect
-import symexec
+import claripy
 
 def patch(infile, outfile, safe=False, verbose=1, whitelist=[], blacklist=[]):
     if verbose >= 0: print 'Loading %s...' % infile
@@ -36,8 +36,9 @@ def patch(infile, outfile, safe=False, verbose=1, whitelist=[], blacklist=[]):
 
 
 def patch_function(binrepr, funcaddr):
-    symrepr = symexec.Solver()
-    binrepr.symrepr = symrepr
+    binrepr.claripy = claripy.ClaripyStandalone()
+    binrepr.claripy.unique_names = False
+    binrepr.symrepr = binrepr.claripy.solver()
     alloc_op = None   # the instruction that performs a stack allocation
     dealloc_ops = []  # the instructions that perform a stack deallocation
     variables = VarList(binrepr, 0)
@@ -57,6 +58,8 @@ def patch_function(binrepr, funcaddr):
             variables.stack_size = -alloc_op.value
 
         elif tag == 'STACK_DEALLOC':
+            if type(bindata.symval) in (int, long):
+                continue
             dealloc_ops.append(bindata)
 
         elif tag == 'STACK_ACCESS':
@@ -77,6 +80,9 @@ def patch_function(binrepr, funcaddr):
     if alloc_op is None:
         if binrepr.verbose > 0: print '\tFunction does not appear to have a stack frame (No alloc)\n'
         return []
+
+    if len(dealloc_ops) == 0:
+        if binrepr.verbose > 0: print '\t*** WARNING: Function does not ever deallocate stack frame\n'
     
 # Find the lowest sp-access that isn't an argument to the next function
 # By starting at accesses to [esp] and stepping up a word at a time
@@ -95,13 +101,11 @@ def patch_function(binrepr, funcaddr):
         if binrepr.verbose > 0:
             num_accs = variables.num_accesses()
             print '''\tFunction has a stack frame of %d bytes.
-\t%d access%s to %d address%s %s made.
-\tThere is %s deallocation.''' % \
+\t%d access%s to %d address%s %s made.''' % \
             (variables.stack_size, 
             num_accs, '' if num_accs == 1 else 'es',
             num_vars, '' if num_vars == 1 else 'es',
-            'is' if num_accs == 1 else 'are',
-            'an automatic' if len(dealloc_ops) == 0 else 'a manual')
+            'is' if num_accs == 1 else 'are')
 
         if binrepr.verbose > 1:
             print 'Stack addresses:', variables.addr_list
@@ -113,40 +117,54 @@ def patch_function(binrepr, funcaddr):
     variables.collapse()
     variables.mark_sizes()
 
-    sym_stack_size = symexec.BitVec("stack_size", 64)
-    symrepr.add(sym_stack_size >= variables.stack_size)
-    symrepr.add(sym_stack_size <= variables.stack_size + (16 * len(variables) + 32))
-    symrepr.add(sym_stack_size % (binrepr.native_word/8) == 0)
+    sym_stack_size = binrepr.claripy.BitVec("stack_size", 64)
+    binrepr.symrepr.add(sym_stack_size >= variables.stack_size)
+    binrepr.symrepr.add(sym_stack_size <= variables.stack_size + (16 * len(variables) + 32))
+    binrepr.symrepr.add(sym_stack_size % (binrepr.native_word/8) == 0)
     
-    alloc_op.apply_constraints(symrepr)
-    symrepr.add(vexutils.SExtTo(64, alloc_op.symval) == -sym_stack_size)
+    alloc_op.apply_constraints(binrepr.symrepr)
+    binrepr.symrepr.add(vexutils.SExtTo(64, alloc_op.symval) == -sym_stack_size)
     for op in dealloc_ops:
-        symrepr.add(op.symval == 0)
+        binrepr.symrepr.add(op.symval == 0)
 
     variables.old_size = variables.stack_size
     variables.stack_size = sym_stack_size
     variables.sym_link()
-
+    
     # OKAY HERE WE GO
     if binrepr.verbose > 1:
         print '\nConstraints:'
-        vexutils.columnize(str(x) for x in symrepr.constraints)
+        vexutils.columnize(str(x) for x in binrepr.symrepr.constraints)
         print
 
+    if not binrepr.symrepr.satisfiable():
+        print '*** SUPERCRITICAL (%x): Safe constraints unsatisfiable, fix this NOW'
+        raise Exception('You\'re a terrible programmer and should check yo\'self before you wreck yo\'self and your team\'s chances of sanity')
+
+    for constraint in variables.unsafe_constraints:
+        if binrepr.symrepr.satisfiable(extra_constraints=[constraint]):
+            binrepr.symrepr.add(constraint)
+            if binrepr.verbose > 1:
+                print 'Added unsafe constraint:', constraint
+        else:
+            if binrepr.verbose > 1:
+                print "DIDN'T add unsafe constraint:", constraint
+
+
     if binrepr.verbose > 0:
-        print '\tResized stack from', variables.old_size, 'to', symrepr.eval(variables.stack_size)
+        print '\tResized stack from', variables.old_size, 'to', binrepr.symrepr.any_value(variables.stack_size).value
 
     if binrepr.verbose > 1:
         for addr in variables.addr_list:
-            fixedval = symrepr.eval(variables.variables[addr].address)
-            fixedval = binrepr.resign_int(fixedval.as_long(), fixedval.size())
+            fixedval = binrepr.symrepr.any_value(variables.variables[addr].address)
+            fixedval = binrepr.resign_int(fixedval.value, fixedval.size())
             print 'moved', addr, 'size', variables.variables[addr].size, 'to', fixedval
 
     out = []
-    out += alloc_op.get_patch_data(symrepr)
+    out += alloc_op.get_patch_data(binrepr.symrepr)
     for dealloc in dealloc_ops:
         dealloc.gotime = True
-        out += dealloc.get_patch_data(symrepr)
+        out += dealloc.get_patch_data(binrepr.symrepr)
     out += variables.get_patches()
     if binrepr.verbose > 0: print
     return out
@@ -209,7 +227,7 @@ class Variable():
     def sym_link(self):
         org_addr = self.address
         name_prefix = 'var' if org_addr < 0 else 'arg'
-        self.address = symexec.BitVec('%s_%x' % (name_prefix, abs(org_addr)), 64)
+        self.address = self.binrepr.claripy.BitVec('%s_%x' % (name_prefix, abs(org_addr)), 64)
         for access in self.accesses: access.sym_link()
         if self.special:
             if org_addr >= 0:
@@ -224,6 +242,7 @@ class Variable():
             self.symrepr.add(self.address >= (org_addr + self.varlist.old_size) - self.varlist.stack_size)
         if org_addr % (self.binrepr.native_word / 8) == 0:
             self.symrepr.add(self.address % (self.binrepr.native_word/8) == 0)
+        self.varlist.unsafe_constraints.append(self.address < org_addr)
         if self.next is None or self.next.special:
             self.symrepr.add(self.address <= org_addr)
         if self.next is not None:
@@ -271,6 +290,7 @@ class VarList():
     def sym_link(self):
         self.done_first = False
         first = self.variables[self.addr_list[0]]
+        self.unsafe_constraints = []
         first.sym_link()        # yaaay recursion and list linkage!
 
     def collapse(self):
