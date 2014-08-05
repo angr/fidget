@@ -130,6 +130,7 @@ def patch_function(binrepr, funcaddr):
     alloc_op.apply_constraints(binrepr.symrepr)
     binrepr.symrepr.add(vexutils.SExtTo(64, alloc_op.symval) == -sym_stack_size)
     for op in dealloc_ops:
+        op.apply_constraints(binrepr.symrepr)
         binrepr.symrepr.add(op.symval == 0)
 
     variables.old_size = variables.stack_size
