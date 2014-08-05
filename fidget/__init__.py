@@ -4,9 +4,11 @@ from binary_patch import binary_patch
 import bisect
 import claripy
 
-def patch(infile, outfile, safe=False, verbose=1, whitelist=[], blacklist=[]):
+def patch(infile, outfile, safe=False, verbose=1, whitelist=[], blacklist=[], debug=False):
     if verbose >= 0: print 'Loading %s...' % infile
     binrepr = executable.Executable(infile)
+    if debug:
+        import ipdb; ipdb.set_trace()
     if binrepr.error:
         print >>sys.stderr, '*** CRITICAL: Not an executable'
         return
@@ -15,7 +17,10 @@ def patch(infile, outfile, safe=False, verbose=1, whitelist=[], blacklist=[]):
     funcs = binrepr.funcman.functions.keys()
     patch_data = []
     for funcaddr in funcs:
-        if binrepr.locate_physaddr(funcaddr)[1].name != '.text':
+        if funcaddr == binrepr.get_entry_point():
+            continue    # don't touch _start. Seriously.
+        sec = binrepr.locate_physaddr(funcaddr)
+        if sec is None or sec[1].name != '.text':
             continue
         # TODO: Do a real name lookup instead of a fake one
         funcname = 'sub_%x' % funcaddr

@@ -168,6 +168,9 @@ class _Executable:
     def call_pushes_ret(self):
         return self.processor in (0, 1)
 
+    def get_entry_point(self):
+        return self.angr.entry
+
 class ElfExecutable(_Executable):
     def __init__(self, filename):
         self.verbose = 0
@@ -195,7 +198,7 @@ class ElfExecutable(_Executable):
             raise ValueError('Unsupported processor type: %s' % elfproc)
 
         self.angr = Project(filename, use_sim_procedures=True, arch=processors[self.processor],
-                exclude_sim_procedure=lambda x: x not in ('__libc_start_main',))
+                exclude_sim_procedure=lambda x: x not in ('__libc_start_main','pthread_create'))
         self.cfg = self.angr.construct_cfg()
         self.funcman = self.cfg.get_function_manager()
 

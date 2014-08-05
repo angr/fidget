@@ -11,14 +11,16 @@ def addopt(options, option, argv):
     elif option in ('h', 'help'):
         usage()
         os.exit(0)
-    elif option in ('safe'):
+    elif option in ('safe',):
         options['safe'] = True
     elif option in ('o', 'output'):
         options['outfiles'].append(next(argv))
-    elif option in ('w'):
+    elif option in ('w',):
         options['whitelist'].append(next(argv))
-    elif option in ('b'):
+    elif option in ('b',):
         options['blacklist'].append(next(argv))
+    elif option in ('debug',):
+        options['debug'] = True
     else:
         print 'Bad argument: %s' % option
         sys.exit(1)
@@ -36,6 +38,7 @@ Options:
     -w [function]           Whitelist a function name
     -b [function]           Blacklist a function name
     --safe                  Make conservative modifications
+    --debug                 Pop an ipdb shell at the main function
 
 Verbosity:
     The default verbosity level is 1.
@@ -70,7 +73,7 @@ def main():
     if len(sys.argv) < 2:
         usage()
     else:
-        options = {"verbose": 1, "safe": False, "infiles": [], "outfiles": [], "whitelist": [], "blacklist": []}
+        options = {"verbose": 1, "safe": False, "infiles": [], "outfiles": [], "whitelist": [], "blacklist": [], "debug": False}
         argv = iter(sys.argv)
         next(argv)
         for arg in argv:
