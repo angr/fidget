@@ -12,3 +12,5 @@ def binary_patch(infile, patchdata, outfile=None):
         fout.write(data)
     fin.close()
     fout.close()
+    import subprocess
+    subprocess.Popen(['chmod', '+x', outfile])

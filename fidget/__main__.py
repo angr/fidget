@@ -3,7 +3,7 @@
 import sys, os
 from fidget import patch
 
-def addopt(options, option):
+def addopt(options, option, argv):
     if option in ('v', 'verbose'):
         options["verbose"] += 1
     elif option in ('q', 'quiet'):
@@ -11,14 +11,16 @@ def addopt(options, option):
     elif option in ('h', 'help'):
         usage()
         os.exit(0)
-    elif option in ('safe'):
+    elif option in ('safe',):
         options['safe'] = True
     elif option in ('o', 'output'):
-        options['outfiles'].append(next(sys.argv))
-    elif option in ('w'):
-        options['whitelist'].append(next(sys.argv))
-    elif option in ('b'):
-        options['blacklist'].append(next(sys.argv))
+        options['outfiles'].append(next(argv))
+    elif option in ('w',):
+        options['whitelist'].append(next(argv))
+    elif option in ('b',):
+        options['blacklist'].append(next(argv))
+    elif option in ('debug',):
+        options['debug'] = True
     else:
         print 'Bad argument: %s' % option
         sys.exit(1)
@@ -36,6 +38,7 @@ Options:
     -w [function]           Whitelist a function name
     -b [function]           Blacklist a function name
     --safe                  Make conservative modifications
+    --debug                 Pop an ipdb shell at the main function
 
 Verbosity:
     The default verbosity level is 1.
@@ -66,18 +69,18 @@ Safety:
     modify or leak other stack variables.
 """ % sys.argv[0]
 
-if __name__ == '__main__':
+def main():
     if len(sys.argv) < 2:
         usage()
     else:
-        options = {"verbose": 1, "safe": False, "infiles": [], "outfiles": [], "whitelist": [], "blacklist": []}
-        sys.argv = iter(sys.argv)
-        next(sys.argv)
-        for arg in sys.argv:
+        options = {"verbose": 1, "safe": False, "infiles": [], "outfiles": [], "whitelist": [], "blacklist": [], "debug": False}
+        argv = iter(sys.argv)
+        next(argv)
+        for arg in argv:
             if arg.startswith('--'):
-                addopt(options, arg[2:])
+                addopt(options, arg[2:], argv)
             elif arg.startswith('-'):
-                for flag in arg[1:]: addopt(options, flag)
+                for flag in arg[1:]: addopt(options, flag, argv)
             else:
                 options["infiles"].append(arg)
         if len(options['whitelist']) > 0 and len(options['blacklist']) > 0:
@@ -93,6 +96,11 @@ if __name__ == '__main__':
         infiles = options['infiles']
         del options['outfiles']
         del options['infiles']
+        import logging
+        logging.basicConfig(level=10*(5-options['verbose']))
         outfiles += [None] * (len(infiles) - len(outfiles))
         for infile, outfile in zip(infiles, outfiles):
             patch(infile, outfile, **options)
+
+if __name__ == '__main__':
+    main()
