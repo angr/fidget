@@ -41,6 +41,39 @@ def equals(a, b):
     else:
         raise Exception("Unknown tag (comparison): %s" % a.tag)
 
+def is_tmp_used(block, tmp):
+    for stmt in block.statements():
+        if stmt.tag in ('Ist_NoOp', 'Ist_IMark'):
+            continue
+        elif stmt.tag in ('Ist_Put', 'Ist_WrTmp'):
+            if is_tmp_in_expression(stmt.data, tmp):
+                return True
+        elif stmt.tag == 'Ist_Store':
+            if is_tmp_in_expression(stmt.data, tmp) or \
+               is_tmp_in_expression(stmt.addr, tmp):
+                return True
+        else:
+            raise Exception("Unknown statement tag (is_used): %s" % stmt.tag)
+    return False
+
+def is_tmp_in_expression(expr, tmp):
+    if expr.tag == 'Iex_RdTmp':
+        return tmp == expr.tmp
+    elif expr.tag in ('Iex_Get', 'Iex_Const', 'Iex_CCall'):
+        return False
+    elif expr.tag == 'Iex_Load':
+        return is_tmp_in_expression(expr.addr, tmp)
+    elif expr.tag in ('Iex_Unop', 'Iex_Binop', 'Iex_Triop'):
+        for arg in expr.args():
+            if is_tmp_in_expression(arg, tmp): return True
+        return False
+    elif expr.tag == 'Iex_ITE':
+        return is_tmp_in_expression(expr.iftrue, tmp) or \
+               is_tmp_in_expression(expr.iffalse, tmp) or \
+               is_tmp_in_expression(expr.cond, tmp)
+    else:
+        raise Exception("Unknown expression tag (is_used): %s" % expr.tag)
+
 # {get,set}_from_path
 # pass it any python objects and a list of keys
 # it will traverse the object's tree with either attribute lookups

@@ -37,6 +37,8 @@ class BlockState:
         b = self.binrepr.angr.arch.bp_offset
         if self.binrepr.processor == 3:
             b = 140 # On PPC, make sure to copy over r31
+        elif self.binrepr.processor == 5:
+            b = 264 # Same for PPC64
         if b in self.regs and self.regs[b].stack_addr:
             out.regs[b] = self.regs[b]
         return out

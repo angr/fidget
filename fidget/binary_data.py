@@ -24,7 +24,7 @@ class BinaryData():
         self.memaddr = mark.addr
         self.physaddr = binrepr.relocate_to_physaddr(self.memaddr)
 
-        self.armthumb = binrepr.processor == 2 and self.binrepr.angr.main_binary.ida.idc.GetReg(self.memaddr, "T") == 1
+        self.armthumb = self.binrepr.angr.is_thumb(self.memaddr)
         binrepr.filestream.seek(self.physaddr)
         self.insbytes = binrepr.filestream.read(self.inslen)
         self.insvex = self.binrepr.make_irsb(self.insbytes, self.armthumb)
@@ -43,8 +43,10 @@ class BinaryData():
         # allow search_value to set the constraints if it really wants to
         if len(self.constraints) == 0:
             rng = self.get_range()
-            self.constraints.append(self.symval >= rng[0])
-            self.constraints.append(self.symval <= rng[1] - 1)
+            if rng[0] != -(1 << (self.symval.size()-1)):
+                self.constraints.append(self.symval >= rng[0])
+            if rng[1] !=  (1 << (self.symval.size()-1)):
+                self.constraints.append(self.symval <= rng[1] - 1)
             if self.modconstraint != 1:
                 self.constraints.append(self.symval % self.modconstraint == 0)
 
@@ -58,7 +60,6 @@ class BinaryData():
         pass
 
     def search_value(self):
-        self.bit_shift = 0
         if self.binrepr.processor == 2:
             self.bit_length = 32
             if len(self.insbytes) == 4:
@@ -200,10 +201,16 @@ class BinaryData():
             for word_size in (64, 32, 16, 8):
                 self.bit_length = word_size
                 for byte_offset in xrange(len(self.insbytes)):
+                    self.modconstraint = 1
                     result = self.extract_bit_value(byte_offset*8, word_size)
                     if result is None: continue
                     if self.binrepr.is_little_endian():
                         result = self.endian_reverse(result, word_size/8)
+                    # On PPC64, the lowest two bits of immediate values are used for other things
+                    # Mask those out
+                    if self.binrepr.processor == 5:
+                        result = result & ~3
+                        self.modconstraint = 4
                     result = self.binrepr.resign_int(result, word_size)
                     if result != self.value: continue
                     self.bit_offset = byte_offset * 8
@@ -238,9 +245,13 @@ class BinaryData():
             if i == self.path[0]:
                 if not vexutils.equals_except(oldstmt, newstmt, self.path[1:], self.binrepr.unsign_int(tog[0], size)):
                     return False
-            else:
-                if not vexutils.equals(oldstmt, newstmt):
-                    return False
+            # Vex will sometimes read from registers then never use them
+            # This messes stuff up, so don't check equality for temp-writes
+            # that are never used.
+            elif oldstmt.tag == 'Ist_WrTmp' and newstmt.tag == 'Ist_WrTmp' and not vexutils.is_tmp_used(self.insvex, oldstmt.tmp):
+                pass
+            elif not vexutils.equals(oldstmt, newstmt):
+                return False
 
             if oldstmt.tag == 'Ist_IMark':
                 i = 0
@@ -254,9 +265,13 @@ class BinaryData():
             if i == self.path[0]:
                 if not vexutils.equals_except(oldstmt, newstmt, self.path[1:], self.binrepr.unsign_int(tog[1]-1, size)):
                     return False
-            else:
-                if not vexutils.equals(oldstmt, newstmt):
-                    return False
+            # Vex will sometimes read from registers then never use them
+            # This messes stuff up, so don't check equality for temp-writes
+            # that are never used.
+            elif oldstmt.tag == 'Ist_WrTmp' and newstmt.tag == 'Ist_WrTmp' and not vexutils.is_tmp_used(self.insvex, oldstmt.tmp):
+                pass
+            elif not vexutils.equals(oldstmt, newstmt):
+                return False
 
             if oldstmt.tag == 'Ist_IMark':
                 i = 0
@@ -397,6 +412,11 @@ class BinaryData():
             offset = self.bit_offset/8
             for i, c in enumerate(puts):
                 outs[i+offset] = c
+            if self.binrepr.processor == 5:
+                orgval = self.binrepr.unpack_format(self.insbytes, len(self.insbytes))
+                newval = self.binrepr.unpack_format(''.join(outs), len(outs))
+                newval |= orgval & 3
+                outs = self.binrepr.pack_format(newval, len(outs))
             return ''.join(outs)
         else:
             raise Exception("Unaligned writes unimplemented")
@@ -424,11 +444,12 @@ class BinaryData():
             return (0, 8)
         elif self.armop == 15:
             return (0, 0x1000)
-        elif self.signed:
-            half = (1 << self.bit_length) / 2
-            return (-half, half, 1 << self.bit_shift)
         else:
-            return (0, 1 << self.bit_length, 1 << self.bit_shift)
+            half = (1 << self.bit_length) / 2
+            tophalf = half
+            while (tophalf - 1) % self.modconstraint != 0:
+                tophalf -= 1
+            return (-half, tophalf, self.modconstraint)
 
     def __contains__(self, val):        # allows checking if an address is in-range with the `in` operator
         bot, top, step = self.get_range()

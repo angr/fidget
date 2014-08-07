@@ -7,13 +7,13 @@ from elftools.common import exceptions
 import pyvex
 import struct
 
-from angr import Project
+from angr import Project, AngrMemoryError
 from binary_data import BinaryData, BinaryDataConglomerate
 from sym_tracking import BlockState, SmartExpression
 import vexutils
 
 #hopefully the only processors we should ever have to target
-processors = ['X86', 'AMD64', 'ARM', 'PPC32', 'MIPS32']
+processors = ['X86', 'AMD64', 'ARM', 'PPC32', 'MIPS32', 'PPC64']
 
 word_size = {0: 1, 1: 2, 2: 4, 7: 8}
 dtyp_by_width = {8: 0, 16: 1, 32: 2, 64: 7}
@@ -25,8 +25,8 @@ dtyp_by_width = {8: 0, 16: 1, 32: 2, 64: 7}
 # appropriate class, all of which inherit from _Executable,
 # the actual class
 
-def Executable(filename):
-    return ElfExecutable(filename) # ...
+def Executable(*args):
+    return ElfExecutable(*args) # ...
 
 class _Executable:
     def find_tags(self, funcaddr):
@@ -62,7 +62,10 @@ class _Executable:
                 elif stmt.tag == 'Ist_Exit':
                     if stmt.jumpkind == 'Ijk_Boring':
                         dest = SmartExpression(blockstate, stmt.dst, mark, [pathindex, 'dst'])
-                        queue.append(blockstate.copy(dest.cleanval))
+                        try:
+                            queue.append(blockstate.copy(dest.cleanval))
+                        except AngrMemoryError:
+                            pass
                     else:
                         print '*** WARNING (%x): Not sure what to do with jumpkind "%s"' % (mark.addr, stmt.jumpkind)
 
@@ -102,7 +105,10 @@ class _Executable:
             if block.jumpkind == 'Ijk_Boring':
                 dest = SmartExpression(blockstate, block.next, mark, [pathindex, 'next'])
                 if dest.cleanval not in self.angr.sim_procedures:
-                    queue.append(blockstate.copy(dest.cleanval))
+                    try:
+                        queue.append(blockstate.copy(dest.cleanval))
+                    except AngrMemoryError:
+                        pass
             elif block.jumpkind in ('Ijk_Ret', 'Ijk_NoDecode'):
                 pass
             elif block.jumpkind == 'Ijk_Call':
@@ -117,7 +123,10 @@ class _Executable:
                 for simirsb, jumpkind in self.cfg.get_successors_and_jumpkind(self.cfg.get_any_irsb(blockstate.addr), False):
                     if jumpkind != 'Ijk_FakeRet':
                         continue
-                    queue.append(blockstate.copy(simirsb.addr))
+                    try:
+                        queue.append(blockstate.copy(simirsb.addr))
+                    except AngrMemoryError:
+                        pass
             else:
                 raise Exception('*** CRITICAL (%x): Can\'t proceed from unknown jumpkind "%s"' % (mark.addr, block.jumpkind))
 
@@ -131,7 +140,7 @@ class _Executable:
         if thumb:
             addr += 1
             offset += 1
-        return pyvex.IRSB(bytes=bytes, arch=self.angr.arch.vex_arch, bytes_offset=offset, mem_addr=addr)
+        return pyvex.IRSB(bytes=bytes, arch=self.angr.arch.vex_arch, bytes_offset=offset, mem_addr=addr, endness=self.angr.arch.vex_endness)
 
     def resign_int(self, n, word_size=None):
         if word_size is None: word_size = self.native_word
@@ -172,7 +181,7 @@ class _Executable:
         return self.angr.entry
 
 class ElfExecutable(_Executable):
-    def __init__(self, filename):
+    def __init__(self, filename, debugangr=False):
         self.verbose = 0
         self.filename = filename
         try:
@@ -194,10 +203,18 @@ class ElfExecutable(_Executable):
             self.processor = 3
         elif elfproc == 'EM_MIPS':
             self.processor = 4
+        elif elfproc == 'EM_PPC64':
+            self.processor = 5
         else:
             raise ValueError('Unsupported processor type: %s' % elfproc)
 
-        self.angr = Project(filename, use_sim_procedures=True, arch=processors[self.processor],
+        endness = 'Iend_LE'
+        if self.elfreader.header.e_ident.EI_DATA == 'ELFDATA2MSB':
+            endness = 'Iend_BE'
+
+        if debugangr:
+            import ipdb; ipdb.set_trace()
+        self.angr = Project(filename, use_sim_procedures=True, arch=processors[self.processor], endness=endness,
                 exclude_sim_procedure=lambda x: x not in ('__libc_start_main','pthread_create'))
         self.cfg = self.angr.construct_cfg()
         self.funcman = self.cfg.get_function_manager()

@@ -21,6 +21,8 @@ def addopt(options, option, argv):
         options['blacklist'].append(next(argv))
     elif option in ('debug',):
         options['debug'] = True
+    elif option in ('debugangr',):
+        options['debugangr'] = True
     else:
         print 'Bad argument: %s' % option
         sys.exit(1)
@@ -39,6 +41,7 @@ Options:
     -b [function]           Blacklist a function name
     --safe                  Make conservative modifications
     --debug                 Pop an ipdb shell at the main function
+    --debugangr             Pop an ipdb shell right before calling into angr
 
 Verbosity:
     The default verbosity level is 1.
@@ -73,7 +76,7 @@ def main():
     if len(sys.argv) < 2:
         usage()
     else:
-        options = {"verbose": 1, "safe": False, "infiles": [], "outfiles": [], "whitelist": [], "blacklist": [], "debug": False}
+        options = {"verbose": 1, "safe": False, "infiles": [], "outfiles": [], "whitelist": [], "blacklist": [], "debug": False, 'debugangr': False}
         argv = iter(sys.argv)
         next(argv)
         for arg in argv:

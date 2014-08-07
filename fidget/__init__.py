@@ -4,9 +4,9 @@ from binary_patch import binary_patch
 import bisect
 import claripy
 
-def patch(infile, outfile, safe=False, verbose=1, whitelist=[], blacklist=[], debug=False):
+def patch(infile, outfile, safe=False, verbose=1, whitelist=[], blacklist=[], debug=False, debugangr=False):
     if verbose >= 0: print 'Loading %s...' % infile
-    binrepr = executable.Executable(infile)
+    binrepr = executable.Executable(infile, debugangr)
     if debug:
         import ipdb; ipdb.set_trace()
     if binrepr.error:
