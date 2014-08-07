@@ -30,7 +30,7 @@ def addopt(options, option, argv):
 def usage():
     print """Fidget: The Binary Tweaker
 
-Usage: %s [options] filename
+Usage: python -m fidget [option | filename] [option | filename] ...
 
 Options:
     -h, --help              View this usage information and exit
@@ -43,6 +43,14 @@ Options:
     --debug                 Pop an ipdb shell at the main function
     --debugangr             Pop an ipdb shell right before calling into angr
 
+Files:
+    Each argument that is not part of an option is treated as an input file.
+    There must be at least one input file, and if there are multiple inputs,
+    they will be processed in the order given. If there are multiple outputs,
+    there must not be more output files than inputs. If there are fewer 
+    outputs than inputs, the <n> outputs will be matched up with the first <n> 
+    inputs, and the rest of the inputs will be outputted as <input>.out.
+
 Verbosity:
     The default verbosity level is 1.
     Each verbose flag increases it by 1, each quiet flag decreases it by 1.
@@ -50,9 +58,20 @@ Verbosity:
     Level 0 prints out only the file and function names
     Level 1 prints out the above and a summary of each function and some warnings
     Level 2 prints out the above and some debug output
-    Level 3 prints out the above and each instruction as it is parsed
+    Level 3 prints out the above and each IR instruction as it is parsed
+    
+    The verbosity settings are also used to determine how much of the logs from
+    angr, simuvex, claripy, etc are shown.
 
 Whitelisting/Blacklisting:
+    There is no actual function name lookup, so all function names are of the
+    form "sub_xxxx", where xxxx is the hexidecimal (lowercase) address of the
+    function.
+
+    The entry point will never be patched, so there is no need to blacklist it,
+    with the exception of some MIPS binaries, which have a stub for an entry 
+    point which calls the real _start function. You'll want to blacklist that.
+
     You cannot use both a whitelist and a blacklist, obviously.
 
     Protip: instead of "-w sub_a -w sub_b -w sub_c" you can
