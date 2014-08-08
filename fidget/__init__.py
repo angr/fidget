@@ -69,11 +69,7 @@ def patch_function(binrepr, funcaddr):
 
         elif tag == 'STACK_ACCESS':
             # TODO: Make sure to keep ALL variables outside the canonial frame frozen
-            if bindata.value < -variables.stack_size:
-                if binrepr.verbose > 0:
-                    print '\t*** WARNING: Instruction accessing above stack frame, discarding'
-                    continue
-            Access(bindata, binrepr, variables)
+            Access(bindata, binrepr, variables, bindata.value < -variables.stack_size)
 
         elif tag == 'STACK_ALLOCA':
             if binrepr.verbose > 0: print '\t*** WARNING: Function appears to use alloca, abandoning\n'
@@ -176,7 +172,7 @@ def patch_function(binrepr, funcaddr):
     return out
 
 class Access():
-    def __init__(self, bindata, binrepr, varlist):
+    def __init__(self, bindata, binrepr, varlist, special):
         self.bindata = bindata
         self.value = bindata.value
         self.binrepr = binrepr
@@ -184,8 +180,8 @@ class Access():
         self.varlist = varlist
 
         self.access_flags = bindata.access_flags   # get access flags
-        Variable(varlist, self)                                 # make a variable or add it to an existing one
-        self.variable = varlist[self.address()]                 # get reference to variable
+        Variable(varlist, self, special)           # make a variable or add it to an existing one
+        self.variable = varlist[self.address()]    # get reference to variable
         self.offset_variable = 0
 
     def address(self):
@@ -197,12 +193,10 @@ class Access():
         self.symrepr.add(self.address() - self.offset_variable == self.variable.address)
 
     def get_patches(self):
-        if self.bindata.value != 0:
-            return self.bindata.get_patch_data(self.symrepr)
-        else: return []
+        return self.bindata.get_patch_data(self.symrepr)
 
 class Variable():
-    def __init__(self, varlist, access):
+    def __init__(self, varlist, access, special=False):
         if access.address() in varlist:
             varlist[access.address()].add_access(access)
             return
@@ -214,7 +208,7 @@ class Variable():
         self.access_flags = 0
         self.add_access(access)
         varlist.add_variable(self)
-        self.special = self.address >= 0
+        self.special = self.address >= 0 or special
 
     def add_access(self, access):
         self.accesses.append(access)

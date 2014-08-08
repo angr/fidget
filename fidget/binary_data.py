@@ -30,6 +30,7 @@ class BinaryData():
         self.insvex = self.binrepr.make_irsb(self.insbytes, self.armthumb)
 
         self.signed = True          # TODO: Figure out if this property can be axed totally
+        self.already_patched = False
         self.modconstraint = 1
         self.constraints = []
         try:
@@ -295,10 +296,13 @@ class BinaryData():
         return out
 
     def get_patch_data(self, symrepr):
-        if self.constant:
+        if self.constant or self.already_patched:
             return []
+        self.already_patched = True
         val = symrepr.any_value(self.symval)
         val = self.binrepr.resign_int(val.value, val.size())
+        if self.binrepr.verbose > 2:
+            print 'Patching address 0x%x with value %d' % (self.memaddr, val)
         patch = self.get_patched_instruction(val)
         if patch == self.insbytes:
             return []

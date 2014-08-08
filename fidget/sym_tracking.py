@@ -162,26 +162,26 @@ class SmartExpression:
             elif vexpression.op.startswith('Iop_Div'):
                 self.cleanval = self.deps[0].cleanval * self.deps[1].cleanval
                 self.dirtyval = self.deps[0].dirtyval * self.deps[1].dirtyval
-            elif vexpression.op in ('Iop_And64', 'Iop_And32', 'Iop_And8'):
+            elif vexpression.op.startswith('Iop_And'):
                 self.shield_constants(self.deps)
                 self.cleanval = self.deps[0].cleanval & self.deps[1].cleanval
                 self.dirtyval = self.deps[0].dirtyval & self.deps[1].dirtyval
                 self.stack_addr = self.deps[0].stack_addr or self.deps[1].stack_addr
-            elif vexpression.op in ('Iop_Or64', 'Iop_Or32', 'Iop_Or8'):
+            elif vexpression.op.startswith('Iop_Or'):
                 self.cleanval = self.deps[0].cleanval | self.deps[1].cleanval
                 self.dirtyval = self.deps[0].dirtyval | self.deps[1].dirtyval
                 self.stack_addr = self.deps[0].stack_addr or self.deps[1].stack_addr
-            elif vexpression.op in ('Iop_Xor64', 'Iop_Xor32', 'Iop_Xor8'):
+            elif vexpression.op.startswith('Iop_Xor'):
                 self.cleanval = self.deps[0].cleanval ^ self.deps[1].cleanval
                 self.dirtyval = self.deps[0].dirtyval ^ self.deps[1].dirtyval
                 self.stack_addr = self.deps[0].stack_addr or self.deps[1].stack_addr
-            elif vexpression.op in ('Iop_Shl64', 'Iop_Shl32'):
+            elif vexpression.op.startswith('Iop_Shl'):
                 self.cleanval = self.deps[0].cleanval << self.deps[1].cleanval
                 self.dirtyval = self.deps[0].dirtyval << vexutils.ZExtTo(opsize, self.deps[1].dirtyval)
-            elif vexpression.op in ('Iop_Sar64', 'Iop_Sar32'):
+            elif vexpression.op.startswith('Iop_Sar'):
                 self.cleanval = self.deps[0].cleanval << self.deps[1].cleanval
                 self.dirtyval = self.deps[0].dirtyval << vexutils.ZExtTo(opsize, self.deps[1].dirtyval)
-            elif vexpression.op in ('Iop_Shr64', 'Iop_Shr32'):
+            elif vexpression.op.startswith('Iop_Shr'):
                 self.cleanval = self.deps[0].cleanval << self.deps[1].cleanval
                 if type(self.deps[0].dirtyval) in (int, long) or type(self.deps[1].dirtyval) in (int, long):
                     self.dirtyval = self.deps[0].dirtyval << self.deps[1].dirtyval
@@ -189,32 +189,55 @@ class SmartExpression:
                     self.dirtyval = self.blockstate.binrepr.claripy.LShR(self.deps[0].dirtyval, vexutils.ZExtTo(opsize, self.deps[1].dirtyval))
             elif vexpression.op in ('Iop_1Uto64', 'Iop_1Uto32', 'Iop_1Uto16', 'Iop_1Uto8'):
                 pass # Why does this even
-            elif vexpression.op in ('Iop_64to8', 'Iop_32to8', 'Iop_16to8'):
+            elif vexpression.op in ('Iop_128to8', 'Iop_64to8', 'Iop_32to8', 'Iop_16to8'):
                 self.cleanval = self.deps[0].cleanval
                 self.dirtyval = vexutils.ZExtTo(8, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_32to16',):
+            elif vexpression.op in ('Iop_8Sto16',):
+                self.cleanval = self.deps[0].cleanval
+                self.dirtyval = vexutils.SExtTo(16, self.deps[0].dirtyval)
+            elif vexpression.op in ('Iop_128to16', 'Iop_64to16', 'Iop_32to16', 'Iop_8Uto16'):
                 self.cleanval = self.deps[0].cleanval
                 self.dirtyval = vexutils.ZExtTo(16, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_64to32', 'Iop_8Uto32'):
-                self.cleanval = self.deps[0].cleanval
-                self.dirtyval = vexutils.ZExtTo(32, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_32Uto64', 'Iop_16Uto32', 'Iop_8Uto64'):
-                self.cleanval = self.deps[0].cleanval
-                self.dirtyval = vexutils.ZExtTo(64, self.deps[0].dirtyval)
             elif vexpression.op in ('Iop_16Sto32', 'Iop_8Sto32'):
                 self.cleanval = self.deps[0].cleanval
                 self.dirtyval = vexutils.SExtTo(32, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_32Sto64',):
+            elif vexpression.op in ('Iop_128to32', 'Iop_64to32', 'Iop_16Uto32', 'Iop_8Uto32'):
+                self.cleanval = self.deps[0].cleanval
+                self.dirtyval = vexutils.ZExtTo(32, self.deps[0].dirtyval)
+            elif vexpression.op in ('Iop_32Sto64', 'Iop_16Sto64', 'Iop_8Sto64'):
                 self.cleanval = self.deps[0].cleanval
                 self.dirtyval = vexutils.SExtTo(64, self.deps[0].dirtyval)
+            elif vexpression.op in ('Iop_128to64', 'Iop_32Uto64', 'Iop_16Uto64', 'Iop_8Uto64'):
+                self.cleanval = self.deps[0].cleanval
+                self.dirtyval = vexutils.ZExtTo(64, self.deps[0].dirtyval)
+            elif vexpression.op in ('Iop_64Sto128', 'Iop_32Sto128', 'Iop_16Sto128', 'Iop_8Sto128'):
+                self.cleanval = self.deps[0].cleanval
+                self.dirtyval = vexutils.SExtTo(128, self.deps[0].dirtyval)
+            elif vexpression.op in ('Iop_64Uto128', 'Iop_32Uto128', 'Iop_16Uto128', 'Iop_8Uto128'):
+                self.cleanval = self.deps[0].cleanval
+                self.dirtyval = vexutils.ZExtTo(128, self.deps[0].dirtyval)
+            elif vexpression.op in ('Iop_16HIto8',):
+                self.cleanval = self.deps[0].cleanval >> 8
+                self.dirtyval = self.deps[0].dirtyval >> 8 if type(self.deps[0].dirtyval) in (int, long) else self.deps[0].dirtyval[15:8]
+            elif vexpression.op in ('Iop_32HIto16',):
+                self.cleanval = self.deps[0].cleanval >> 16
+                self.dirtyval = self.deps[0].dirtyval >> 16 if type(self.deps[0].dirtyval) in (int, long) else self.deps[0].dirtyval[31:16]
             elif vexpression.op in ('Iop_64HIto32',):
                 self.cleanval = self.deps[0].cleanval >> 32
                 self.dirtyval = self.deps[0].dirtyval >> 32 if type(self.deps[0].dirtyval) in (int, long) else self.deps[0].dirtyval[63:32]
+            elif vexpression.op in ('Iop_128HIto64',):
+                self.cleanval = self.deps[0].cleanval >> 64
+                self.dirtyval = self.deps[0].dirtyval >> 64 if type(self.deps[0].dirtyval) in (int, long) else self.deps[0].dirtyval[127:64]
             elif vexpression.op == 'Iop_32HLto64':
                 self.cleanval = (self.deps[0].cleanval << 32) | self.deps[1].cleanval
                 a1 = vexutils.ZExtTo(64, self.deps[0].dirtyval)
                 a2 = vexutils.ZExtTo(64, self.deps[1].dirtyval)
                 self.dirtyval = (a1 << 32) | a2
+            elif vexpression.op == 'Iop_64HLto128':
+                self.cleanval = (self.deps[0].cleanval << 64) | self.deps[1].cleanval
+                a1 = vexutils.ZExtTo(128, self.deps[0].dirtyval)
+                a2 = vexutils.ZExtTo(128, self.deps[1].dirtyval)
+                self.dirtyval = (a1 << 64) | a2
             elif 'Cmp' in vexpression.op:
                 self.cleanval = 0
                 self.dirtyval = 0
