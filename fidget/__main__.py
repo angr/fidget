@@ -89,7 +89,7 @@ Safety:
     all up relative to the stack base, preventing buffer overflows 
     messing with eip, but will be ineffective against overflows that merely 
     modify or leak other stack variables.
-""" % sys.argv[0]
+"""
 
 def main():
     if len(sys.argv) < 2:
