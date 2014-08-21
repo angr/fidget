@@ -183,43 +183,25 @@ class _Executable:
 class ElfExecutable(_Executable):
     def __init__(self, filename, debugangr=False):
         self.verbose = 0
+        self.error = False
         self.filename = filename
+        if debugangr:
+            import ipdb; ipdb.set_trace()
         try:
-            self.filestream = open(filename)
-            self.elfreader = ELFFile(self.filestream)
-            self.error = False
-        except exceptions.ELFError:
+            self.angr = Project(filename, use_sim_procedures=True,
+                    exclude_sim_procedure=lambda x: x not in ('__libc_start_main','pthread_create'))
+            self.cfg = self.angr.construct_cfg()
+            self.funcman = self.cfg.get_function_manager()
+            self.native_word = self.angr.arch.bits
+            self.filestream = self.angr.elffile.stream
+            try:
+                self.processor = processors.index(self.angr.arch.name)
+            except:
+                raise ValueError('Unsupported Architecture: %s' % self.angr.arch.name)
+        except:
             self.error = True
             return
 
-        elfproc = self.elfreader.header.e_machine
-        if elfproc == 'EM_386':
-            self.processor = 0
-        elif elfproc == 'EM_X86_64':
-            self.processor = 1
-        elif elfproc == 'EM_ARM':
-            self.processor = 2
-        elif elfproc == 'EM_PPC':
-            self.processor = 3
-        elif elfproc == 'EM_MIPS':
-            self.processor = 4
-        elif elfproc == 'EM_PPC64':
-            self.processor = 5
-        else:
-            raise ValueError('Unsupported processor type: %s' % elfproc)
-
-        endness = 'Iend_LE'
-        if self.elfreader.header.e_ident.EI_DATA == 'ELFDATA2MSB':
-            endness = 'Iend_BE'
-
-        if debugangr:
-            import ipdb; ipdb.set_trace()
-        self.angr = Project(filename, use_sim_procedures=True, arch=processors[self.processor], endness=endness,
-                exclude_sim_procedure=lambda x: x not in ('__libc_start_main','pthread_create'))
-        self.cfg = self.angr.construct_cfg()
-        self.funcman = self.cfg.get_function_manager()
-
-        self.native_word = self.angr.arch.bits
 
     def relocate_to_physaddr(self, address):
         pack = self.locate_physaddr(address)
@@ -227,15 +209,15 @@ class ElfExecutable(_Executable):
         return pack[0]
 
     def locate_physaddr(self, address):
-        sec = self.elfreader.get_section_by_name('.text')
+        sec = self.angr.elffile.get_section_by_name('.text')
         attempt = self._relocate_to_physaddr(address, sec)
         if attempt is not None: return (attempt, sec)
 
-        sec = self.elfreader.get_section_by_name('.data')
+        sec = self.angr.elffile.get_section_by_name('.data')
         attempt = self._relocate_to_physaddr(address, sec)
         if attempt is not None: return (attempt, sec)
 
-        for section in self.elfreader.iter_sections():
+        for section in self.angr.elffile.iter_sections():
             attempt = self._relocate_to_physaddr(address, section)
             if attempt is not None: return (attempt, section)
         return None
