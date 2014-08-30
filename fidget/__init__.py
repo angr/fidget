@@ -20,7 +20,7 @@ def patch(infile, outfile, safe=False, verbose=1, whitelist=[], blacklist=[], de
         if funcaddr == binrepr.get_entry_point():
             continue    # don't touch _start. Seriously.
         sec = binrepr.locate_physaddr(funcaddr)
-        if sec is None or sec[1].name != '.text':
+        if sec is None or sec != 'text':
             continue
         # TODO: Do a real name lookup instead of a fake one
         funcname = 'sub_%x' % funcaddr

@@ -1,9 +1,6 @@
 # functions that provide the interface for messing with
 # binaries and stuff, via whatever tools.
 
-from elftools.elf.elffile import ELFFile
-from elftools.elf.descriptions import describe_e_machine
-from elftools.common import exceptions
 import pyvex
 import struct
 
@@ -180,6 +177,9 @@ class _Executable:
     def get_entry_point(self):
         return self.angr.entry
 
+    def read_memory(self, addr, size):
+        return ''.join(self.angr.main_binary.memory[addr + i] for i in xrange(size))
+
 class ElfExecutable(_Executable):
     def __init__(self, filename, debugangr=False):
         self.verbose = 0
@@ -193,7 +193,6 @@ class ElfExecutable(_Executable):
             self.cfg = self.angr.construct_cfg()
             self.funcman = self.cfg.get_function_manager()
             self.native_word = self.angr.arch.bits
-            self.filestream = self.angr.elffile.stream
             try:
                 self.processor = processors.index(self.angr.arch.name)
             except:
@@ -202,30 +201,8 @@ class ElfExecutable(_Executable):
             self.error = True
             return
 
+    def locate_physaddr(self, address):
+        return self.angr.main_binary.in_which_segment(address)
 
     def relocate_to_physaddr(self, address):
-        pack = self.locate_physaddr(address)
-        if pack is None: return None
-        return pack[0]
-
-    def locate_physaddr(self, address):
-        sec = self.angr.elffile.get_section_by_name('.text')
-        attempt = self._relocate_to_physaddr(address, sec)
-        if attempt is not None: return (attempt, sec)
-
-        sec = self.angr.elffile.get_section_by_name('.data')
-        attempt = self._relocate_to_physaddr(address, sec)
-        if attempt is not None: return (attempt, sec)
-
-        for section in self.angr.elffile.iter_sections():
-            attempt = self._relocate_to_physaddr(address, section)
-            if attempt is not None: return (attempt, section)
-        return None
-
-    def _relocate_to_physaddr(self, address, section):
-        if address < section.header.sh_addr or address > section.header.sh_addr + section.header.sh_size:
-            return None
-        return address - section.header.sh_addr + section.header.sh_offset
-
-
-
+        return self.angr.main_binary.addr_to_offset(address)
