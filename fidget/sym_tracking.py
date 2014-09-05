@@ -1,9 +1,116 @@
-# Home of the BlockState and SmartExpression classes
+# Home of find_stack_tags and the BlockState and SmartExpression classes
 # Basically stuff for tracking data flow through a basic block and generating tags for it
 
-import claripy
-import vexutils
+from angr import AngrMemoryError
+
 from binary_data import BinaryData, BinaryDataConglomerate
+import vexutils
+
+def find_stack_tags(binrepr, symrepr, funcaddr):
+    queue = [BlockState(binrepr, symrepr, funcaddr)]
+    cache = set()
+    while len(queue) > 0:
+        blockstate = queue.pop(0)
+        if blockstate.addr in cache:
+            continue
+        mark = None
+        pathindex = 0
+        block = binrepr.angr.block(blockstate.addr)
+        for stmt in block.statements():
+            if stmt.tag == 'Ist_IMark':
+                mark = stmt
+                cache.add(mark.addr)
+                pathindex = -1
+                if binrepr.verbose > 2:
+                    sys.stdout.flush()
+                    stmt.pp()
+                    print
+                continue
+
+            pathindex += 1
+            if binrepr.verbose > 2:
+                import sys;
+                sys.stdout.write('%.3d  ' % pathindex)
+                stmt.pp()
+                print
+            if stmt.tag in ('Ist_NoOp', 'Ist_AbiHint'):
+                pass
+
+            elif stmt.tag == 'Ist_Exit':
+                if stmt.jumpkind == 'Ijk_Boring':
+                    dest = SmartExpression(blockstate, stmt.dst, mark, [pathindex, 'dst'])
+                    try:
+                        queue.append(blockstate.copy(dest.cleanval))
+                    except AngrMemoryError:
+                        pass
+                else:
+                    print '*** WARNING (%x): Not sure what to do with jumpkind "%s"' % (mark.addr, stmt.jumpkind)
+
+            elif stmt.tag in ('Ist_WrTmp', 'Ist_Store', 'Ist_Put'):
+                this_expression = SmartExpression(blockstate, stmt.data, mark, [pathindex, 'data'])
+                blockstate.assign(stmt, this_expression, pathindex)
+
+            elif stmt.tag == 'Ist_LoadG':
+                # Conditional loads. Lots of bullshit.
+                this_expression = SmartExpression(blockstate, stmt.addr, mark, [pathindex, 'addr'])
+                blockstate.access(this_expression, 1)
+                tmp_size = vexutils.extract_int(block.tyenv.typeOf(stmt.dst))
+                this_expression.dirtyval = vexutils.ZExtTo(tmp_size, this_expression.dirtyval)
+                blockstate.temps[stmt.dst] = this_expression
+                SmartExpression(blockstate, stmt.guard, mark, [pathindex, 'guard'])
+                SmartExpression(blockstate, stmt.alt, mark, [pathindex, 'alt'])
+
+            elif stmt.tag == 'Ist_StoreG':
+                # Conditional store
+                addr_expr = SmartExpression(blockstate, stmt.addr, mark, [pathindex, 'addr'])
+                value_expr = SmartExpression(blockstate, stmt.data, mark, [pathindex, 'data'])
+                blockstate.access(addr_expr, 2)
+                if addr_expr.stack_addr:
+                    blockstate.stack_cache[addr_expr.cleanval] = value_expr
+                if value_expr.stack_addr:
+                    blockstate.access(value_expr, 4)
+
+                SmartExpression(blockstate, stmt.guard, mark, [pathindex, 'guard'])
+
+
+            else:
+                stmt.pp()
+                import pdb; pdb.set_trace()
+                raise Exception("Unknown vex instruction???")
+
+        # The last argument is wrong but I dont't think it matters
+        if block.jumpkind == 'Ijk_Boring':
+            dest = SmartExpression(blockstate, block.next, mark, [pathindex, 'next'])
+            if dest.cleanval not in binrepr.angr.sim_procedures:
+                try:
+                    queue.append(blockstate.copy(dest.cleanval))
+                except AngrMemoryError:
+                    pass
+        elif block.jumpkind in ('Ijk_Ret', 'Ijk_NoDecode'):
+            pass
+        elif block.jumpkind == 'Ijk_Call':
+            if binrepr.call_pushes_ret():
+                # Pop the return address off the stack and keep going
+                stack = blockstate.get_reg(binrepr.angr.arch.sp_offset)
+                popped = stack.deps[0] if stack.deps[0].stack_addr else stack.deps[1]
+                blockstate.regs[binrepr.angr.arch.sp_offset] = popped
+                # Discard the last two tags -- they'll be an alloc and an access for the call (the push and the retaddr)
+                blockstate.tags = blockstate.tags[:-2]
+
+            for simirsb, jumpkind in binrepr.cfg.get_successors_and_jumpkind(binrepr.cfg.get_any_irsb(blockstate.addr), False):
+                if jumpkind != 'Ijk_FakeRet':
+                    continue
+                try:
+                    queue.append(blockstate.copy(simirsb.addr))
+                except AngrMemoryError:
+                    pass
+        else:
+            raise Exception('*** CRITICAL (%x): Can\'t proceed from unknown jumpkind "%s"' % (mark.addr, block.jumpkind))
+
+        blockstate.end()
+        for tag in blockstate.tags:
+            yield tag
+
 
 class AccessType:       # enum, basically :P
     READ = 1
@@ -12,8 +119,9 @@ class AccessType:       # enum, basically :P
     UNINITREAD = 8
 
 class BlockState:
-    def __init__(self, binrepr, addr):
+    def __init__(self, binrepr, symrepr, addr):
         self.binrepr = binrepr
+        self.symrepr = symrepr
         self.addr = addr
         self.irsb = binrepr.angr.block(addr)
         self.regs = {}
@@ -31,7 +139,7 @@ class BlockState:
         return str(self)
 
     def copy(self, newaddr):
-        out = BlockState(self.binrepr, newaddr)
+        out = BlockState(self.binrepr, self.symrepr, newaddr)
         s = self.binrepr.angr.arch.sp_offset
         out.regs[s] = self.regs[s]
         b = self.binrepr.angr.arch.bp_offset
@@ -106,6 +214,8 @@ class SmartExpression:
         self.vexpression = vexpression
         self.mark = mark
         self.path = path
+        self.binrepr = self.blockstate.binrepr
+        self.symrepr = self.blockstate.symrepr
         self.cleanval = 0
         self.dirtyval = 0
         self.deps = []
@@ -125,8 +235,8 @@ class SmartExpression:
             if vexpression.tag == 'Iex_Const':
                 vexpression = vexpression.con
             size = vexutils.extract_int(vexpression.tag)
-            self.cleanval = self.blockstate.binrepr.resign_int(vexpression.value, size)
-            self.dirtyval = self.blockstate.binrepr.claripy.BitVec('%x_%d' % (mark.addr, path[0]), size)
+            self.cleanval = self.binrepr.resign_int(vexpression.value, size)
+            self.dirtyval = self.symrepr._claripy.BitVec('%x_%d' % (mark.addr, path[0]), size)
             self.rootval = True
         elif vexpression.tag == 'Iex_ITE':
             false_expr = SmartExpression(blockstate, vexpression.iffalse, mark, path + ['iffalse'])
@@ -157,6 +267,7 @@ class SmartExpression:
                 self.dirtyval = self.deps[0].dirtyval + self.deps[1].dirtyval
                 self.stack_addr = self.deps[0].stack_addr or self.deps[1].stack_addr
             elif vexpression.op.startswith('Iop_Mul'):
+                self.shield_constants(self.deps)
                 self.cleanval = self.deps[0].cleanval * self.deps[1].cleanval
                 self.dirtyval = self.deps[0].dirtyval * self.deps[1].dirtyval
             elif vexpression.op.startswith('Iop_Div'):
@@ -186,7 +297,7 @@ class SmartExpression:
                 if type(self.deps[0].dirtyval) in (int, long) or type(self.deps[1].dirtyval) in (int, long):
                     self.dirtyval = self.deps[0].dirtyval << self.deps[1].dirtyval
                 else:
-                    self.dirtyval = self.blockstate.binrepr.claripy.LShR(self.deps[0].dirtyval, vexutils.ZExtTo(opsize, self.deps[1].dirtyval))
+                    self.dirtyval = self.symrepr._claripy.LShR(self.deps[0].dirtyval, vexutils.ZExtTo(opsize, self.deps[1].dirtyval))
             elif vexpression.op in ('Iop_1Uto64', 'Iop_1Uto32', 'Iop_1Uto16', 'Iop_1Uto8'):
                 pass # Why does this even
             elif vexpression.op in ('Iop_128to8', 'Iop_64to8', 'Iop_32to8', 'Iop_16to8'):
@@ -266,7 +377,6 @@ class SmartExpression:
         elif vexpression.tag == 'Iex_CCall':
             pass
         else:
-            import pdb; pdb.set_trace()
             raise Exception('Unknown expression tag (%x): "%s"' % (mark.addr, vexpression.tag))
 
 
@@ -291,7 +401,7 @@ class SmartExpression:
         elif self.bincache[0] is None:
             if self.rootval:
                 self.bincache[0] = [BinaryData(self.mark, self.path + ['con', 'value'], \
-                        self.cleanval, self.dirtyval, self.blockstate.binrepr)]
+                        self.cleanval, self.dirtyval, self.binrepr, self.symrepr)]
                 return self.bincache[0]
             
             self.bincache[0] = sum(map(lambda x: x.make_bindata(), self.deps), [])

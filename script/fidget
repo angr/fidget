@@ -1,7 +1,7 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 
 import sys, os
-from fidget import patch
+from fidget import Fidget
 
 def addopt(options, option, argv):
     if option in ('v', 'verbose'):
@@ -30,7 +30,7 @@ def addopt(options, option, argv):
 def usage():
     print """Fidget: The Binary Tweaker
 
-Usage: python -m fidget [option | filename] [option | filename] ...
+Usage: fidget [option | filename] [option | filename] ...
 
 Options:
     -h, --help              View this usage information and exit
@@ -65,7 +65,7 @@ Verbosity:
 
 Whitelisting/Blacklisting:
     There is no actual function name lookup, so all function names are of the
-    form "sub_xxxx", where xxxx is the hexidecimal (lowercase) address of the
+    form "sub_xxxx", where xxxx is the hexadecimal (lowercase) address of the
     function.
 
     The entry point will never be patched, so there is no need to blacklist it,
@@ -114,15 +114,17 @@ def main():
         if len(options["outfiles"]) > len(options["infiles"]):
             print 'More output files specified than input files!'
             sys.exit(1)
-        outfiles = options['outfiles']
-        infiles = options['infiles']
-        del options['outfiles']
-        del options['infiles']
+        outfiles = options.pop('outfiles')
+        infiles = options.pop('infiles')
         import logging
         logging.basicConfig(level=10*(5-options['verbose']))
         outfiles += [None] * (len(infiles) - len(outfiles))
         for infile, outfile in zip(infiles, outfiles):
-            patch(infile, outfile, **options)
+            fidget = Fidget(infile, **options)
+            if fidget.error:
+                continue
+            fidget.patch()
+            fidget.apply_patches(outfile)
 
 if __name__ == '__main__':
     main()

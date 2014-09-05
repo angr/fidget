@@ -9,7 +9,8 @@ int main(void) {
         }
     }
     for (k = 0; k < 100; k++) {
-        printf("%d\n", coolbuf[k]);
+        printf("%d ", coolbuf[k]);
     }
+    printf("\n");
     return 0;
 }

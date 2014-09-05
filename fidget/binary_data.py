@@ -13,12 +13,13 @@ import vexutils
 # on multiple numbers in the binary
 
 class BinaryData():
-    def __init__(self, mark, path, cleanval, dirtyval, binrepr):
+    def __init__(self, mark, path, cleanval, dirtyval, binrepr, symrepr):
         self.mark = mark
         self.path = path
         self.value = cleanval
         self.symval = dirtyval
         self.binrepr = binrepr
+        self.symrepr = symrepr
 
         self.inslen = mark.len
         self.memaddr = mark.addr
@@ -84,10 +85,10 @@ class BinaryData():
                 thoughtval &= 0xFFFFFFFF
                 if thoughtval != self.value:
                     raise BinaryData.ValueNotFoundException
-                self.bit_shift = self.binrepr.claripy.BitVec(hex(self.memaddr)[2:] + '_shift', 4)
+                self.bit_shift = self.symrepr._claripy.BitVec(hex(self.memaddr)[2:] + '_shift', 4)
                 #self.symval = self.binrepr.claripy.BitVec(hex(self.memaddr)[2:] + '_imm', 32)
-                self.symval8 = self.binrepr.claripy.BitVec(hex(self.memaddr)[2:] + '_imm8', 8)
-                self.constraints.append(self.symval == self.binrepr.claripy.RotateRight(self.symval8.zero_extend(32-8), self.bit_shift.zero_extend(32-4)*2))
+                self.symval8 = self.symrepr._claripy.BitVec(hex(self.memaddr)[2:] + '_imm8', 8)
+                self.constraints.append(self.symval == self.symrepr._claripy.RotateRight(self.symval8.zero_extend(32-8), self.bit_shift.zero_extend(32-4)*2))
             elif not self.armthumb and self.armins & 0x0E400090 == 0x00400090:
                 # LDRH
                 self.armop = 3
