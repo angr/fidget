@@ -21,6 +21,6 @@ int main(int argc, char ** argv) {
     divAction.sa_handler = divByZeroError;
     sigaction(SIGFPE, &divAction, NULL);
     printf("3/4 = %d\n9/2 = %d\n4/2 = %d\n10/0 = ", divide(3,4), divide(9,2), divide(4,2));
-    divide(10, 0);
+    printf("%d\n", divide(10, 0));
     return 0;
 }

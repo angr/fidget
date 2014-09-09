@@ -42,11 +42,14 @@ class Fidget(object):
         if outfile is None:
             outfile = self.infile + '.out'
 
-        # Create the output file as a copy of the input. Pipe will force it synchronous.
-        subprocess.Popen(['cp', self.infile, outfile], stdout=subprocess.PIPE)
-
         fin = open(self.infile)
         fout = open(outfile, 'w')
+
+        buf = 'a'
+        while buf:
+            buf = fin.read(1024*1024)
+            fout.write(buf)
+
         for offset, data in patchdata:
             fout.seek(offset)
             fout.write(data)
