@@ -1,0 +1,17 @@
+#!/usr/bin/python
+
+import os, sys, random
+
+try:
+    port = int(sys.argv[2])
+    command = sys.argv[1]
+except:
+    print 'Usage: %s <command> <port>' % sys.argv[0]
+    sys.exit(1)
+
+randint = random.randint(0, 10000000)
+tmpfile = '/tmp/stdio-launcher-%d.sh' % randint
+open(tmpfile, 'w').write('#!/bin/sh\nexec ' + command)
+os.chmod(tmpfile, 0700)
+
+os.execl('/usr/bin/socat', 'socat', 'TCP-LISTEN:%d,reuseaddr,fork' % port, 'EXEC:' + tmpfile)

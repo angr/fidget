@@ -25,10 +25,6 @@ class Fidget(object):
             print 'Loading %s...' % infile
 
         self._binrepr = Executable(infile, debugangr)
-        if self._binrepr.error:
-            print >>sys.stderr, '*** CRITICAL: Loading error'
-            self.error = True
-            return
 
         self._binrepr.verbose = verbose
         self._binrepr.safe = safe
@@ -55,8 +51,7 @@ class Fidget(object):
             fout.write(data)
         fin.close()
         fout.close()
-
-        subprocess.Popen(['chmod', '+x', outfile])
+        os.chmod(outfile, 0755)
 
     def dump_patches(self):
         # TODO: More kinds of patches please :P
@@ -70,9 +65,23 @@ class Fidget(object):
 
         # Loop through all the functions as found by angr's CFG
         funcs = self._binrepr.funcman.functions.keys()
+
+        # Find the real _start on MIPS so we don't touch it
+        do_not_touch = None
+        if self._binrepr.angr.arch.name == 'MIPS32':
+            bad_exits = self._binrepr.cfg.get_any_irsb(self._binrepr.angr.entry).exits()
+            toxic_exits = [e for e in bad_exits if e.default_exit and e.jumpkind == 'Ijk_Call']
+            if len(toxic_exits) > 0:
+                do_not_touch = toxic_exits[0].concretize()
+
         for funcaddr in funcs:
             # But don't touch _start. Seriously.
             if funcaddr == self._binrepr.get_entry_point():
+                continue
+
+            # On MIPS there's another function that's part of the entry point.
+            # Trying to mess with it will cause catastrope.
+            if funcaddr == do_not_touch:
                 continue
 
             # Only patch functions in the text section

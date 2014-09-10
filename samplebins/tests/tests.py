@@ -59,13 +59,8 @@ def generic_ctf_test(binary, tester, always, winner):
     nose.tools.assert_in(winner, testdata2)
 
     fidgetress = Fidget(binary, verbose=-1)
-    if fidgetress.error:
-        nose.tools.assert_false(fidgetress._binrepr.error_loading)
-        nose.tools.assert_false(fidgetress._binrepr.error_cfg)
-        nose.tools.assert_false(fidgetress._binrepr.error_processor)
-        nose.tools.assert_false(fidgetress._binrepr.error)
-    
     fidgetress.patch()
+    nose.tools.assert_not_equals(len(fidgetress.dump_patches()), 0)
     fidgetress.apply_patches(binary + '.out')
 
     nose.tools.assert_in(binary + '.out', os.listdir('.'))
@@ -90,12 +85,8 @@ def generic_test(binary, expected):
     nose.tools.assert_in(expected, output)
 
     fidgetress = Fidget(binary, verbose=-1)
-    if fidgetress.error:
-        nose.tools.assert_false(fidgetress._binrepr.error_loading)
-        nose.tools.assert_false(fidgetress._binrepr.error_cfg)
-        nose.tools.assert_false(fidgetress._binrepr.error_processor)
-        nose.tools.assert_false(fidgetress._binrepr.error)
-
+    fidgetress.patch()
+    nose.tools.assert_not_equals(len(fidgetress.dump_patches()), 0)
     fidgetress.apply_patches(binary + '.out')
 
     nose.tools.assert_in(binary + '.out', os.listdir('.'))
@@ -144,11 +135,11 @@ class Process:
     def __init__(self, binary, async, arch, socketserver):
         command = arch_bullcrap[arch] + [binary]
         if socketserver:
-            command = ['serve-stdio', ' '.join(command), str(socketserver)]
+            command = ['tests/serve-stdio', ' '.join(command), str(socketserver)]
         kwargs = {}
         if not async:
             kwargs['stdout'] = subprocess.PIPE
-        print command
+        #print command
         self.process = subprocess.Popen(command, **kwargs)
         if async:
             time.sleep(0.5)

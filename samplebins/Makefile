@@ -62,6 +62,7 @@ clean: cleanout
 	rm -f test_loops_*
 	rm -f ctf_amd64 ctf_x86 ctf_armhf ctf_ppc ctf_aarch64
 	rm -f test.py test.pyc
+	rm -rf db THIS_IS_NOT_KEY_JUST_PASSCODE
 
 cleanout:
 	rm -f *.out
