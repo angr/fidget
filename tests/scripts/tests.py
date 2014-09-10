@@ -44,33 +44,37 @@ def make_test_function(binary):
 
 
 def generic_ctf_test(binary, tester, always, winner):
-    nose.tools.assert_in(binary, os.listdir('.'))
+    nose.tools.assert_in(binary, os.listdir('tests'))
 
+    os.chdir('tests')
     process = boot(binary)
     try:
         testdata = tester()
         testdata2 = tester()
     finally:
         process.kill()
+        os.chdir('..')
 
     nose.tools.assert_in(always, testdata)
     nose.tools.assert_in(winner, testdata)
     nose.tools.assert_in(always, testdata2)
     nose.tools.assert_in(winner, testdata2)
 
-    fidgetress = Fidget(binary, verbose=-1)
+    fidgetress = Fidget('tests/' + binary, verbose=-1)
     fidgetress.patch()
     nose.tools.assert_not_equals(len(fidgetress.dump_patches()), 0)
-    fidgetress.apply_patches(binary + '.out')
+    fidgetress.apply_patches()
 
-    nose.tools.assert_in(binary + '.out', os.listdir('.'))
+    nose.tools.assert_in(binary + '.out', os.listdir('tests'))
 
+    os.chdir('tests')
     process = boot(binary + '.out')
     try:
         testdata = tester()
         testdata2 = tester()
     finally:
         process.kill()
+        os.chdir('..')
 
     nose.tools.assert_in(always, testdata)
     nose.tools.assert_not_in(winner, testdata)
@@ -78,21 +82,25 @@ def generic_ctf_test(binary, tester, always, winner):
     nose.tools.assert_not_in(winner, testdata2)
 
 def generic_test(binary, expected):
-    nose.tools.assert_in(binary, os.listdir('.'))
+    nose.tools.assert_in(binary, os.listdir('tests'))
 
+    os.chdir('tests')
     process = boot(binary)
     output = process.output()
+    os.chdir('..')
     nose.tools.assert_in(expected, output)
 
-    fidgetress = Fidget(binary, verbose=-1)
+    fidgetress = Fidget('tests/' + binary, verbose=-1)
     fidgetress.patch()
     nose.tools.assert_not_equals(len(fidgetress.dump_patches()), 0)
-    fidgetress.apply_patches(binary + '.out')
+    fidgetress.apply_patches()
 
-    nose.tools.assert_in(binary + '.out', os.listdir('.'))
+    nose.tools.assert_in(binary + '.out', os.listdir('tests'))
 
+    os.chdir('tests')
     process = boot(binary + '.out')
     output = process.output()
+    os.chdir('..')
     nose.tools.assert_in(expected, output)
 
 
@@ -135,7 +143,7 @@ class Process:
     def __init__(self, binary, async, arch, socketserver):
         command = arch_bullcrap[arch] + [binary]
         if socketserver:
-            command = ['tests/serve-stdio', ' '.join(command), str(socketserver)]
+            command = ['scripts/serve-stdio', ' '.join(command), str(socketserver)]
         kwargs = {}
         if not async:
             kwargs['stdout'] = subprocess.PIPE

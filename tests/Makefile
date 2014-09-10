@@ -8,7 +8,7 @@ CC_MIPS = mips-linux-gnu-gcc
 CC_MIPSEL = mipsel-linux-gnu-gcc
 CC_AARCH64 = aarch64-linux-gnu-gcc
 
-all: test_arrays test_loops test_division ctf test
+all: test_arrays test_loops test_division ctf
 
 test_arrays: test_arrays.c
 	$(CC_AMD64) -o test_arrays_amd64 $<
@@ -51,8 +51,8 @@ ctf:
 	wget http://shell-storm.org/repo/CTF/Hitcon-2014/ty/ty-b83f0d0edeb8cfad76d30eddc58da139 -O ctf_aarch64
 	chmod +x ctf_amd64 ctf_x86 ctf_armhf ctf_ppc ctf_aarch64
 
-test:
-	tests/gen_tests.py
+tests:
+	scripts/gen_tests.py
 
 .PHONY: clean cleanout
 
@@ -61,7 +61,7 @@ clean: cleanout
 	rm -f test_arrays_*
 	rm -f test_loops_*
 	rm -f ctf_amd64 ctf_x86 ctf_armhf ctf_ppc ctf_aarch64
-	rm -f test.py test.pyc
+	rm -f *.pyc scripts/*.pyc ../*.pyc
 	rm -rf db THIS_IS_NOT_KEY_JUST_PASSCODE
 
 cleanout:

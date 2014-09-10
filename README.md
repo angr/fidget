@@ -16,6 +16,17 @@ workon angr
 python setup.py install
 ```
 
+This will copy the python library into your virtualenv's site-packages directory, 
+and copy a small python script into your virtualenv's bin directory. If you want to 
+do these as symlinks instead of copying (i.e. if you are in a dev environment), do 
+the following:
+
+```bash
+workon angr
+ln -s $(pwd)/fidget $VIRTUAL_ENV/lib/python2.7/site-packages/fidget
+ln -s $(pwd)/script/fidget $VIRTUAL_ENV/bin/fidget
+```
+
 Using as a Script
 -----------------
 
@@ -35,6 +46,27 @@ fidgetress = Fidget(filepath, **options)
 fidgetress.patch()
 fidgetress.apply_patches(output_file)
 ```
+
+Using as a Test Suite
+---------------------
+
+`test.py` in the project root is a nose testsuite that provides end-to-end tests for
+the entire angr suite. If you actually run it with `nosetests`, you will probably want
+to specify `-v --nocapture --nologcapture` for your own sanity.
+
+It can also be run as an actual script, which will run all the tests and format the 
+results similarly to nosetests. No comment on how long I spent getting this working.
+
+Currently, the best known test results fail only on the following tests:
+- `test_arrays_armhf`, `test_loops_armhf`, and `test_division_armhf` fail because they 
+  are thumb mode and cfgs for thumb mode are lolnotworking in angr.
+- `test_arrays_aarch64`, `test_loops_aarch64`, `test_division_aarch64`, and `ctf_aarch64`
+  fail because aarch64 is unsupported. Dur.
+- `ctf_armhf` fails because not only is it thumb, I can't frigging get the exploit to 
+  actually work! Gah.
+
+And on that note, `ctf_ppc` will pass its tests, even though it is _slightly_ broken after
+being run through fidget. Blame angr.CFG for not being able to follow jump tables.
 
 Current caveats
 ---------------
