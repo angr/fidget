@@ -1,6 +1,10 @@
 import bisect
 
+from errors import *
 import vexutils
+
+import logging
+l = logging.getLogger('fidget.stack_magic')
 
 class Access():
     def __init__(self, bindata, varlist, special=False):
@@ -148,15 +152,13 @@ class VarList():
         child = self.variables.pop(self.addr_list.pop(i))
         parent = self.variables[self.addr_list[i-1]]
         parent.merge(child)
-        if self.binrepr.verbose > 1:
-            print '\tMerged %d into %d' % (child.address, parent.address)
+        l.debug('Merged %s into %s', hex(child.address), hex(parent.address))
 
     def merge_down(self, i):
         child = self.variables.pop(self.addr_list.pop(i))
         parent = self.variables[self.addr_list[i]]
         parent.merge(child)
-        if self.binrepr.verbose > 1:
-            print '\tMerged %d down to %d' % (child.address, parent.address)
+        l.debug('Merged %s down to %s', hex(child.address), hex(parent.address))
 
     def get_patches(self):
         return sum((var.get_patches() for var in self.get_all_vars()), [])

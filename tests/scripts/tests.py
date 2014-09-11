@@ -60,7 +60,7 @@ def generic_ctf_test(binary, tester, always, winner):
     nose.tools.assert_in(always, testdata2)
     nose.tools.assert_in(winner, testdata2)
 
-    fidgetress = Fidget('tests/' + binary, verbose=-1)
+    fidgetress = Fidget('tests/' + binary)
     fidgetress.patch()
     nose.tools.assert_not_equals(len(fidgetress.dump_patches()), 0)
     fidgetress.apply_patches()
@@ -90,7 +90,7 @@ def generic_test(binary, expected):
     os.chdir('..')
     nose.tools.assert_in(expected, output)
 
-    fidgetress = Fidget('tests/' + binary, verbose=-1)
+    fidgetress = Fidget('tests/' + binary)
     fidgetress.patch()
     nose.tools.assert_not_equals(len(fidgetress.dump_patches()), 0)
     fidgetress.apply_patches()

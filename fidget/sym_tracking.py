@@ -4,7 +4,11 @@
 from angr import AngrMemoryError
 
 from binary_data import BinaryData, BinaryDataConglomerate
+from errors import *
 import vexutils
+
+import logging
+l = logging.getLogger('fidget.sym_tracking')
 
 def find_stack_tags(binrepr, symrepr, funcaddr):
     queue = [BlockState(binrepr, symrepr, funcaddr)]
@@ -21,18 +25,16 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
                 mark = stmt
                 cache.add(mark.addr)
                 pathindex = -1
-                if binrepr.verbose > 2:
-                    sys.stdout.flush()
-                    stmt.pp()
-                    print
+                #sys.stdout.flush()
+                #stmt.pp()
+                #print
                 continue
 
             pathindex += 1
-            if binrepr.verbose > 2:
-                import sys;
-                sys.stdout.write('%.3d  ' % pathindex)
-                stmt.pp()
-                print
+            #import sys;
+            #sys.stdout.write('%.3d  ' % pathindex)
+            #stmt.pp()
+            #print
             if stmt.tag in ('Ist_NoOp', 'Ist_AbiHint'):
                 pass
 
@@ -44,7 +46,7 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
                     except AngrMemoryError:
                         pass
                 else:
-                    print '*** WARNING (%x): Not sure what to do with jumpkind "%s"' % (mark.addr, stmt.jumpkind)
+                    l.warning('({:#x}) Not sure what to do with jumpkind {!r}', mark.addr, stmt.jumpkind)
 
             elif stmt.tag in ('Ist_WrTmp', 'Ist_Store', 'Ist_Put'):
                 this_expression = SmartExpression(blockstate, stmt.data, mark, [pathindex, 'data'])
@@ -74,9 +76,7 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
 
 
             else:
-                stmt.pp()
-                import pdb; pdb.set_trace()
-                raise Exception("Unknown vex instruction???")
+                raise FidgetUnsupportedError("Unknown vex instruction???", stmt)
 
         # The last argument is wrong but I dont't think it matters
         if block.jumpkind == 'Ijk_Boring':
@@ -105,7 +105,7 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
                 except AngrMemoryError:
                     pass
         else:
-            raise Exception('*** CRITICAL (%x): Can\'t proceed from unknown jumpkind "%s"' % (mark.addr, block.jumpkind))
+            raise FidgetError("({:#x}) Can't proceed from unknown jumpkind {!r}".format(mark.addr, block.jumpkind))
 
         blockstate.end()
         for tag in blockstate.tags:
@@ -373,11 +373,11 @@ class SmartExpression:
                 self.dirtyval = 0 # Again with the Fucking of This
 
             else:
-                raise Exception('Unknown operator (%x): "%s"' % (mark.addr, vexpression.op))
+                raise FidgetUnsupportedError('Unknown operator ({:#x}): {!r}'.format(mark.addr, vexpression.op))
         elif vexpression.tag == 'Iex_CCall':
             pass
         else:
-            raise Exception('Unknown expression tag (%x): "%s"' % (mark.addr, vexpression.tag))
+            raise FidgetUnsupportedError('Unknown expression tag ({:#x}): {!r}'.format(mark.addr, vexpression.tag))
 
 
     def copy_to_self(self, other):

@@ -8,11 +8,15 @@ import pyvex
 
 from errors import *
 
+import logging
+l = logging.getLogger('fidget.executable')
+
 #hopefully the only processors we should ever have to target
 processors = ['X86', 'AMD64', 'ARM', 'PPC32', 'MIPS32', 'PPC64']
 
 class Executable(object):
     def __init__(self, filename, debugangr=False):
+        l.info("Loading %s", filename)
         self.verbose = 0
         self.filename = filename
         if debugangr:

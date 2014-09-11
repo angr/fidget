@@ -1,5 +1,9 @@
 import os
 
+from errors import *
+import logging
+l = logging.getLogger('fidget.vexutils')
+
 # These are a giant mess of utility functions that are used in multiple spots.
 # A lot are only good to make dealing with comparisons between vex structs tolerable.
 
@@ -39,7 +43,7 @@ def equals(a, b):
     elif a.tag == 'Iex_ITE':
         return equals(a.iftrue, b.iftrue) and equals(a.iffalse, b.iffalse) and equals(a.cond, b.cond)
     else:
-        raise Exception("Unknown tag (comparison): %s" % a.tag)
+        raise FidgetUnsupportedError("Unknown tag (comparison): {}".format(a.tag))
 
 def is_tmp_used(block, tmp):
     for stmt in block.statements():
@@ -53,7 +57,7 @@ def is_tmp_used(block, tmp):
                is_tmp_in_expression(stmt.addr, tmp):
                 return True
         else:
-            raise Exception("Unknown statement tag (is_used): %s" % stmt.tag)
+            raise FidgetUnsupportedError("Unknown statement tag (is_used): {}".format(stmt.tag))
     return False
 
 def is_tmp_in_expression(expr, tmp):
@@ -72,7 +76,7 @@ def is_tmp_in_expression(expr, tmp):
                is_tmp_in_expression(expr.iffalse, tmp) or \
                is_tmp_in_expression(expr.cond, tmp)
     else:
-        raise Exception("Unknown expression tag (is_used): %s" % expr.tag)
+        raise FidgetUnsupportedError("Unknown expression tag (is_used): {}".format(expr.tag))
 
 # {get,set}_from_path
 # pass it any python objects and a list of keys

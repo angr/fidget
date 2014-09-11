@@ -1,6 +1,11 @@
 import struct
 import pyvex, claripy
+
 import vexutils
+from errors import *
+
+import logging
+l = logging.getLogger('fidget.binary_data')
 
 # BinaryData
 # The fundemental link between binary data and things that know what binary data should be
@@ -29,13 +34,12 @@ class BinaryData():
         self.insbytes = self.binrepr.read_memory(self.memaddr, self.inslen)
         self.insvex = self.binrepr.make_irsb(self.insbytes, self.armthumb)
 
-        self.signed = True          # TODO: Figure out if this property can be axed totally
         self.already_patched = False
         self.modconstraint = 1
         self.constraints = []
         try:
             self.search_value()         # This one is the biggie
-        except BinaryData.ValueNotFoundException:
+        except BinaryData.ValueNotFoundError:
             self.constraints = [dirtyval == cleanval]
             self.constant = True
             return
@@ -57,7 +61,10 @@ class BinaryData():
         for constraint in self.constraints:
             symrepr.add(constraint)
 
-    class ValueNotFoundException(Exception):
+    class ValueNotFoundError(FidgetError):
+        pass
+
+    class FuzzingAssertionFailure(FidgetError):
         pass
 
     def search_value(self):
@@ -68,14 +75,14 @@ class BinaryData():
             elif len(self.insbytes) == 2:
                 self.armins = struct.unpack('H', self.insbytes)[0]
             else:
-                raise Exception("Holy crap ARM what???")
+                raise FidgetError("Holy crap ARM what???")
             if not self.armthumb and self.armins & 0x0C000000 == 0x04000000:
                 # LDR
                 self.armop = 1
                 thoughtval = self.armins & 0xFFF
                 thoughtval *= 1 if self.armins & 0x00800000 else -1
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundException
+                    raise BinaryData.ValueNotFoundError
             elif not self.armthumb and self.armins & 0x0E000000 == 0x02000000:
                 # Data processing w/ immediate
                 self.armop = 2
@@ -84,7 +91,7 @@ class BinaryData():
                 thoughtval = (thoughtval >> shiftval) | (thoughtval << (32 - shiftval))
                 thoughtval &= 0xFFFFFFFF
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundException
+                    raise BinaryData.ValueNotFoundError
                 self.bit_shift = self.symrepr._claripy.BitVec(hex(self.memaddr)[2:] + '_shift', 4)
                 #self.symval = self.binrepr.claripy.BitVec(hex(self.memaddr)[2:] + '_imm', 32)
                 self.symval8 = self.symrepr._claripy.BitVec(hex(self.memaddr)[2:] + '_imm8', 8)
@@ -95,7 +102,7 @@ class BinaryData():
                 thoughtval = (self.armins & 0xF) | ((self.armins & 0xF00) >> 4)
                 thoughtval *= 1 if self.armins & 0x00800000 else -1
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundException
+                    raise BinaryData.ValueNotFoundError
             elif not self.armthumb and self.armins & 0x0E000000 == 0x0C000000:
                 # Coprocessor data transfer
                 # i.e. FLD/FST
@@ -103,7 +110,7 @@ class BinaryData():
                 thoughtval = self.armins & 0xFF
                 thoughtval *= 4 if self.armins & 0x00800000 else -4
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundException
+                    raise BinaryData.ValueNotFoundError
                 self.modconstraint = 4
             elif self.armthumb and self.armins & 0xF000 in (0x9000, 0xA000):
                 # SP-relative LDR/STR, also SP-addiition
@@ -111,7 +118,7 @@ class BinaryData():
                 thoughtval = self.armins & 0xFF
                 thoughtval *= 4
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundException
+                    raise BinaryData.ValueNotFoundError
                 self.modconstraint = 4
             elif self.armthumb and self.armins & 0xFF00 == 0xB000:
                 # Add/sub offset to SP
@@ -121,7 +128,7 @@ class BinaryData():
                 thoughtval = self.armins & 0x7F
                 thoughtval *= 4
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundException
+                    raise BinaryData.ValueNotFoundError
                 self.modconstraint = 4
             elif self.armthumb and self.armins & 0x0000FFE0 == 0x0000E840:
                 # Thumb32 - LDREX/STREX ...
@@ -129,7 +136,7 @@ class BinaryData():
                 thoughtval = (self.armins & 0x00FF0000) >> 16
                 thoughtval *= 4
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundException
+                    raise BinaryData.ValueNotFoundError
                 self.modconstraint = 4
             elif self.armthumb and self.armins & 0x0000FE40 == 0x0000E840:
                 # Thumb32 - LDRD/STRD
@@ -137,7 +144,7 @@ class BinaryData():
                 thoughtval = (self.armins & 0x00FF0000) >> 16
                 thoughtval *= 4 if self.armins & 0x00000080 else -4
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundException
+                    raise BinaryData.ValueNotFoundError
                 self.modconstraint = 4
             elif self.armthumb and self.armins & 0x0800FE80 == 0x0800F800 and self.armins & 0x05000000 != 0:
                 # Thumb32 - something something LDR/STR
@@ -148,7 +155,7 @@ class BinaryData():
                 if self.armins & 0x02000000 == 0:
                     thoughtval *= -1
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundException
+                    raise BinaryData.ValueNotFoundError
             elif self.armthumb and self.armins & 0x0000FE80 == 0x0000F880:
                 # Thumb32 - LDR/STR with 12-bit imm
                 self.armop = 10
@@ -156,7 +163,7 @@ class BinaryData():
                 if self.armins & 0x00000100:
                     thoughtval = self.binrepr.resign_int(thoughval, 12)
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundException
+                    raise BinaryData.ValueNotFoundError
             elif self.armthumb and self.armins & 0x8000FA00 == 0x0000F000:
                 # Thumb32 - Data processing w/ modified 12 bit imm a.k.a EVIL
                 if self.armins & 0x70000400:
@@ -168,20 +175,20 @@ class BinaryData():
                     self.armop = 11
                     thoughtval = (self.armins & 0x00FF0000) >> 16
                     if thoughtval != self.value:
-                        raise BinaryData.ValueNotFoundException
+                        raise BinaryData.ValueNotFoundError
             elif self.armthumb and self.armins & 0xFC00 == 0x1C00:
                 # Thumb - ADD/SUB
                 self.armop = 13
                 thoughtval = (self.armins & 0x01C0) >> 6
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundException
+                    raise BinaryData.ValueNotFoundError
             elif self.armthumb and self.armins & 0x0000EE00 == 0x0000EC00:
                 # Thumb32 - Coprocessor stuff
                 self.armop = 14
                 thoughtval = (self.armins & 0x00FF0000) >> 16
                 thoughtval *= 4 if self.armins & 0x00000080 else -4
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundException
+                    raise BinaryData.ValueNotFoundError
                 self.modconstraint = 4
             elif self.armthumb and self.armins & 0x8000FB40 == 0x0000F200:
                 # Thumb32 - ADD/SUB plain 12 bit imm
@@ -190,12 +197,11 @@ class BinaryData():
                 thoughtval |= (self.armins & 0x70000000) >> 20
                 thoughtval |= (self.armins & 0x00000400) << 1
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundException
+                    raise BinaryData.ValueNotFoundError
             else:
-                raise BinaryData.ValueNotFoundException
-                raise Exception("(%x) Unsupported ARM instruction!" % self.memaddr)
+                raise BinaryData.ValueNotFoundError
             if not self.sanity_check():
-                raise BinaryData.ValueNotFoundException
+                raise BinaryData.ValueNotFoundError
         else:
             self.armop = 0
             found = False
@@ -221,21 +227,19 @@ class BinaryData():
                 if found:
                     break
             if not found:
-                raise BinaryData.ValueNotFoundException
+                raise BinaryData.ValueNotFoundError
 
     def sanity_check(self):
         # Prerequisite
         m = self.path[:]
         basic = vexutils.get_from_path(vexutils.get_stmt_num(self.insvex, m[0]), m[1:])
         if basic is None:
-            import ipdb; ipdb.set_trace()
-            raise Exception("This is a problem")
+            raise BinaryData.FuzzingAssertionFailure("Can't follow given path!")
         m[-1] = 'type'
         size = vexutils.get_from_path(vexutils.get_stmt_num(self.insvex, m[0]), m[1:])
         size = vexutils.extract_int(size)
         if self.binrepr.resign_int(basic, size) != self.value:
-            raise Exception("Failed basic existance assertion..?")
-            return False
+            raise BinaryData.FuzzingAssertionFailure("Can't extract known value from path!")
         # Get challengers
         tog = self.get_range()
 
@@ -301,8 +305,7 @@ class BinaryData():
         self.already_patched = True
         val = symrepr.any_value(self.symval)
         val = self.binrepr.resign_int(val.value, val.size())
-        if self.binrepr.verbose > 2:
-            print 'Patching address 0x%x with value %d' % (self.memaddr, val)
+        l.debug('Patching address %s with value %s', hex(self.memaddr), hex(val))
         patch = self.get_patched_instruction(val)
         if patch == self.insbytes:
             return []
@@ -423,7 +426,7 @@ class BinaryData():
                 outs = self.binrepr.pack_format(newval, len(outs))
             return ''.join(outs)
         else:
-            raise Exception("Unaligned writes unimplemented")
+            raise FidgetUnsupportedError("Unaligned writes unimplemented")
 
     def get_range(self):
         if self.armop == 1:
@@ -475,7 +478,6 @@ class BinaryDataConglomerate:
         self.value = cleanval
         self.symval = dirtyval
         self.dependencies = []
-        self.signed = True
         self.access_flags = flags
 
     def add(self, binrepr):
