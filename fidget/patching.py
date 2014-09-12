@@ -12,21 +12,16 @@ import logging
 l = logging.getLogger('fidget.patching')
 
 class Fidget(object):
-    def __init__(self, infile, safe=False, whitelist=[], blacklist=[], debug=False, debugangr=False):
+    def __init__(self, infile, safe=False, whitelist=[], blacklist=[], debugangr=False):
         self.infile = infile
         self.safe = safe
         self.whitelist = whitelist
         self.blacklist = blacklist
-        self.debug = debug
-        self.debugangr = debugangr
-
         self.error = False
         self._stack_patch_data = []
 
         self._binrepr = Executable(infile, debugangr)
-
         self._binrepr.safe = safe
-
 
     def apply_patches(self, outfile=None):
         patchdata = self.dump_patches()
