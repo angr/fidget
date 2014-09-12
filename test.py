@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 import os, sys, traceback
-sys.path.append('tests/scripts')
+dd = os.path.dirname(__file__)
+td = os.path.realpath(os.path.join(dd, 'tests', 'scripts'))
+sys.path.append(td)
+os.chdir(os.path.dirname(__file__))
 import tests
 
 def setup_module():
