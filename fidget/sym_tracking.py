@@ -46,7 +46,7 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
                     except AngrMemoryError:
                         pass
                 else:
-                    l.warning('({:#x}) Not sure what to do with jumpkind {!r}', mark.addr, stmt.jumpkind)
+                    l.warning('(%s) Not sure what to do with jumpkind %s', hex(mark.addr), stmt.jumpkind)
 
             elif stmt.tag in ('Ist_WrTmp', 'Ist_Store', 'Ist_Put'):
                 this_expression = SmartExpression(blockstate, stmt.data, mark, [pathindex, 'data'])
