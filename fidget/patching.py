@@ -4,7 +4,6 @@ import subprocess
 
 from stack_magic import Access, Variable, VarList
 from executable import Executable
-from binary_patch import binary_patch
 from sym_tracking import find_stack_tags
 from errors import *
 import vexutils
