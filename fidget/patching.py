@@ -216,7 +216,7 @@ class Fidget(object):
             else:
                 l.debug("DIDN'T add unsafe constraint: %s", constraint)
 
-        new_stack = symrepr.any_value(variables.stack_size).value
+        new_stack = symrepr.any(variables.stack_size).value
         if new_stack == variables.old_size:
             l.warning('\tUnable to resize stack')
             return
@@ -224,7 +224,7 @@ class Fidget(object):
         l.info('\tResized stack from 0x%x to 0x%x', variables.old_size, new_stack)
 
         for addr in variables.addr_list:
-            fixedval = symrepr.any_value(variables.variables[addr].address)
+            fixedval = symrepr.any(variables.variables[addr].address)
             fixedval = self._binrepr.resign_int(fixedval.value, fixedval.size())
             l.debug('Moved %s (size %d) to %s', hex(addr), variables.variables[addr].size, hex(fixedval))
 

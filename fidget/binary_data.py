@@ -303,7 +303,7 @@ class BinaryData():
         if self.constant or self.already_patched:
             return []
         self.already_patched = True
-        val = symrepr.any_value(self.symval)
+        val = symrepr.any(self.symval)
         val = self.binrepr.resign_int(val.value, val.size())
         l.debug('Patching address %s with value %s', hex(self.memaddr), hex(val))
         patch = self.get_patched_instruction(val)
@@ -325,9 +325,9 @@ class BinaryData():
             symrepr = clrp.solver()
             self.apply_constraints(symrepr)
             symrepr.add(self.symval == value)
-            newimm = symrepr.any_value(self.symval8).value
+            newimm = symrepr.any(self.symval8).value
             newimm = self.binrepr.resign_int(newimm)
-            newshift = symrepr.any_value(self.bit_shift).value
+            newshift = symrepr.any(self.bit_shift).value
             newval |= newshift << 8
             newval |= newimm
             return struct.pack('I', newval)
