@@ -3,6 +3,7 @@ import os, sys, traceback
 dd = os.path.realpath(os.path.dirname(__file__))
 sd = os.path.join(dd, 'tests', 'scripts')
 sys.path.append(sd)
+os.chdir(dd)
 import tests
 
 def setup_module():
