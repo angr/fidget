@@ -22,8 +22,7 @@ class Executable(object):
         if debugangr:
             import ipdb; ipdb.set_trace()
 
-        self.angr = Project(filename, use_sim_procedures=True,
-                exclude_sim_procedure=lambda x: x not in ('__libc_start_main','pthread_create'))
+        self.angr = Project(filename, exclude_sim_procedures=lambda x: x not in ('__libc_start_main','pthread_create'))
         self.native_word = self.angr.arch.bits
         self.cfg = self.angr.construct_cfg()
         self.funcman = self.cfg.get_function_manager()
