@@ -2,10 +2,13 @@
 
 outfile = '''#!/usr/bin/env python
 import os, sys, traceback
-sys.path.append('tests/scripts')
+dd = os.path.dirname(__file__)
+sd = os.path.realpath(os.path.join(dd, 'tests', 'scripts'))
+sys.path.append(sd)
 import tests
 
 def setup_module():
+    os.chdir(dd)
     os.system('make -C tests')
 '''
 
@@ -56,6 +59,7 @@ def add_binary(binary):
     global outfile, kicker
     outfile += """
 def test_{0}():
+    os.chdir(dd)
     tests.make_test_function("{0}")()
 """.format(binary)
 
