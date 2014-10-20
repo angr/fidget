@@ -6,7 +6,7 @@ import struct
 from angr import Project
 import pyvex
 
-from errors import *
+from .errors import FidgetUnsupportedError
 
 import logging
 l = logging.getLogger('fidget.executable')
@@ -22,10 +22,10 @@ class Executable(object):
         if debugangr:
             import ipdb; ipdb.set_trace()
 
-        self.angr = Project(filename, exclude_sim_procedure=lambda x: x not in ('__libc_start_main','pthread_create'))
+        self.angr = Project(filename)
         self.native_word = self.angr.arch.bits
         self.cfg = self.angr.construct_cfg()
-        self.funcman = self.cfg.get_function_manager()
+        self.funcman = self.cfg.function_manager
         if self.angr.arch.name not in processors:
             raise FidgetUnsupportedError("Unsupported archetecture " + self.angr.arch.name)
         self.processor = processors.index(self.angr.arch.name)
@@ -39,20 +39,20 @@ class Executable(object):
     def relocate_to_memaddr(self, address):
         return self.angr.main_binary.offset_to_addr(address)
 
-    def make_irsb(self, bytes, thumb=False):
+    def make_irsb(self, byte_string, thumb=False):
         offset = 0
         addr = 0
         if thumb:
             addr += 1
             offset += 1
-        return pyvex.IRSB(bytes=bytes, arch=self.angr.arch.vex_arch, bytes_offset=offset, mem_addr=addr, endness=self.angr.arch.vex_endness)
+        return pyvex.IRSB(bytes=byte_string, arch=self.angr.arch.vex_arch, bytes_offset=offset, mem_addr=addr, endness=self.angr.arch.vex_endness)
 
     def resign_int(self, n, word_size=None):
         if word_size is None: word_size = self.native_word
         top = (1 << word_size) - 1
-        if (n > top):
+        if n > top:
             return None
-        if (n < top/2): # woo int division
+        if n < top/2: # woo int division
             return int(n)
         return int(-((n ^ top) + 1))
 

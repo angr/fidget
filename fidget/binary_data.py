@@ -1,8 +1,8 @@
 import struct
-import pyvex, claripy
+import claripy
 
-import vexutils
-from errors import *
+from . import vexutils
+from .errors import FidgetError, FidgetUnsupportedError
 
 import logging
 l = logging.getLogger('fidget.binary_data')
@@ -37,6 +37,13 @@ class BinaryData():
         self.already_patched = False
         self.modconstraint = 1
         self.constraints = []
+
+        self.bit_length = None
+        self.bit_shift = None
+        self.bit_offset = None
+        self.armins = None
+        self.armop = None
+        self.symval8 = None
         try:
             self.search_value()         # This one is the biggie
         except BinaryData.ValueNotFoundError:
@@ -161,7 +168,7 @@ class BinaryData():
                 self.armop = 10
                 thoughtval = (self.armins & 0x0FFF0000) >> 16
                 if self.armins & 0x00000100:
-                    thoughtval = self.binrepr.resign_int(thoughval, 12)
+                    thoughtval = self.binrepr.resign_int(thoughtval, 12)
                 if thoughtval != self.value:
                     raise BinaryData.ValueNotFoundError
             elif self.armthumb and self.armins & 0x8000FA00 == 0x0000F000:
@@ -291,7 +298,8 @@ class BinaryData():
             return None
         return (int(self.insbytes.encode('hex'), 16) >> (8*len(self.insbytes) - bit_length - bit_offset)) & ((1 << bit_length) - 1)
 
-    def endian_reverse(self, x, n):
+    @staticmethod
+    def endian_reverse(x, n):
         out = 0
         for _ in xrange(n):
             out <<= 8
@@ -321,7 +329,7 @@ class BinaryData():
             return struct.pack('I', newval)
         elif self.armop == 2:
             newval = self.armins & 0xFFFFF000
-            clrp = claripy.ClaripyStandalone()
+            clrp = claripy.ClaripyStandalone('fidget_quicksolve_%x' % self.memaddr)
             symrepr = clrp.solver()
             self.apply_constraints(symrepr)
             symrepr.add(self.symval == value)
@@ -456,16 +464,7 @@ class BinaryData():
             tophalf = half
             while (tophalf - 1) % self.modconstraint != 0:
                 tophalf -= 1
-            return (-half, tophalf, self.modconstraint)
-
-    def __contains__(self, val):        # allows checking if an address is in-range with the `in` operator
-        bot, top, step = self.get_range()
-        if val < bot or val >= top: return False
-        if (val - bot) % step != 0: return False
-        return True
-
-    def __iter__(self):                 # CAREFUL-- Don't use these for constraint solving unless you KNOW WHAT YOU'RE DOING
-        return xrange(*self.get_range())  # This quickly turn into a fuckall-deep nested loop nest and everything will die
+            return (-half, tophalf)
 
     def __reversed__(self):
         return reversed(xrange(*self.get_range()))

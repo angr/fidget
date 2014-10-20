@@ -1,7 +1,6 @@
 import bisect
 
-from errors import *
-import vexutils
+from . import vexutils
 
 import logging
 l = logging.getLogger('fidget.stack_magic')
@@ -44,6 +43,8 @@ class Variable():
         self.add_access(access)
         varlist.add_variable(self)
         self.special = self.address >= 0 or special
+        self.next = None
+        self.size = None
 
     def add_access(self, access):
         self.accesses.append(access)
@@ -99,6 +100,8 @@ class VarList():
         self.symrepr = symrepr
         self.stack_size = stack_size
         self.old_size = stack_size
+        self.unsafe_constraints = []
+        self.done_first = False
 
     def __getitem__(self, key):
         return self.variables[key]
@@ -124,9 +127,7 @@ class VarList():
         return map(lambda x: self.variables[x], self.addr_list)
 
     def sym_link(self):
-        self.done_first = False
         first = self.variables[self.addr_list[0]]
-        self.unsafe_constraints = []
         first.sym_link()        # yaaay recursion and list linkage!
 
     def collapse(self):
@@ -162,12 +163,6 @@ class VarList():
 
     def get_patches(self):
         return sum((var.get_patches() for var in self.get_all_vars()), [])
-
-    def __str__(self):
-        return '\n'.join(str(x) for x in self.vars)
-
-    def __repr__(self):
-        return str(self)
 
     def mark_sizes(self):
         for i, addr in enumerate(self.addr_list[:-1]):

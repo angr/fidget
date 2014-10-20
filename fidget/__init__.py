@@ -1,4 +1,4 @@
-from patching import Fidget
+from .patching import Fidget
 
 def patch_file(infile, outfile, **options):
     fidgetress = Fidget(infile, **options)

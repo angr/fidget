@@ -3,9 +3,9 @@
 
 from angr import AngrMemoryError
 
-from binary_data import BinaryData, BinaryDataConglomerate
-from errors import *
-import vexutils
+from .binary_data import BinaryData, BinaryDataConglomerate
+from .errors import FidgetError, FidgetUnsupportedError
+from . import vexutils
 
 import logging
 l = logging.getLogger('fidget.sym_tracking')
@@ -113,6 +113,9 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
 
 
 class AccessType:       # enum, basically :P
+    def __init__(self):
+        pass
+
     READ = 1
     WRITE = 2
     POINTER = 4
@@ -389,7 +392,9 @@ class SmartExpression:
         self.rootval = other.rootval
         self.path = other.path
 
-    def shield_constants(self, expr_list, exception_list=[]):
+    @staticmethod
+    def shield_constants(expr_list, exception_list=None):
+        exception_list = exception_list if exception_list is not None else []
         for i, expr in enumerate(expr_list):
             if i in exception_list: continue
             if expr.rootval:
@@ -403,7 +408,7 @@ class SmartExpression:
                 self.bincache[0] = [BinaryData(self.mark, self.path + ['con', 'value'], \
                         self.cleanval, self.dirtyval, self.binrepr, self.symrepr)]
                 return self.bincache[0]
-            
+
             self.bincache[0] = sum(map(lambda x: x.make_bindata(), self.deps), [])
 
         if flags is None:
@@ -428,5 +433,6 @@ class ConstExpression:
         self.mark = None
         self.path = []
 
-    def make_bindata(self):
+    @staticmethod
+    def make_bindata():
         return []

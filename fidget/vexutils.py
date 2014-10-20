@@ -1,6 +1,6 @@
 import os
 
-from errors import *
+from .errors import FidgetUnsupportedError
 import logging
 l = logging.getLogger('fidget.vexutils')
 
@@ -127,8 +127,8 @@ def equals_except(a, b, path, val):
     return result
 
 # get_stmt_num
-# pass it a pyvex IRSB and a number-- it'll pull out the nth statement after 
-# the first Imark. Useful for when you're got an unoptimized pyvex and there 
+# pass it a pyvex IRSB and a number-- it'll pull out the nth statement after
+# the first Imark. Useful for when you're got an unoptimized pyvex and there
 # are frigging no-ops everywhere.
 
 def get_stmt_num(block, n):

@@ -1,22 +1,21 @@
-import sys, os
+import os
 import claripy
-import subprocess
 
-from stack_magic import Access, Variable, VarList
-from executable import Executable
-from sym_tracking import find_stack_tags
-from errors import *
-import vexutils
+from .stack_magic import Access, VarList
+from .executable import Executable
+from .sym_tracking import find_stack_tags
+from .errors import FidgetError, FidgetUnsupportedError
+from . import vexutils
 
 import logging
 l = logging.getLogger('fidget.patching')
 
 class Fidget(object):
-    def __init__(self, infile, safe=False, whitelist=[], blacklist=[], debugangr=False):
+    def __init__(self, infile, safe=False, whitelist=None, blacklist=None, debugangr=False):
         self.infile = infile
         self.safe = safe
-        self.whitelist = whitelist
-        self.blacklist = blacklist
+        self.whitelist = whitelist if whitelist is not None else []
+        self.blacklist = blacklist if blacklist is not None else []
         self.error = False
         self._stack_patch_data = []
 
@@ -110,7 +109,7 @@ class Fidget(object):
 
 
     def patch_function_stack(self, funcaddr):
-        clrp = claripy.ClaripyStandalone()
+        clrp = claripy.ClaripyStandalone('fidget_function_%x' % funcaddr)
         clrp.unique_names = False
         symrepr = clrp.solver()
         alloc_op = None   # the instruction that performs a stack allocation
@@ -149,7 +148,7 @@ class Fidget(object):
 
         if len(dealloc_ops) == 0:
             l.warning('\tFunction does not ever deallocate stack frame')
-        
+
     # Find the lowest sp-access that isn't an argument to the next function
     # By starting at accesses to [esp] and stepping up a word at a time
         if self._binrepr.is_convention_stack_args():
@@ -183,7 +182,7 @@ class Fidget(object):
         symrepr.add(sym_stack_size >= variables.stack_size)
         symrepr.add(sym_stack_size <= variables.stack_size + (16 * len(variables) + 32))
         symrepr.add(sym_stack_size % (self._binrepr.native_word/8) == 0)
-        
+
         alloc_op.apply_constraints(symrepr)
         symrepr.add(vexutils.SExtTo(64, alloc_op.symval) == -sym_stack_size)
         for op in dealloc_ops:
@@ -193,7 +192,7 @@ class Fidget(object):
         variables.old_size = variables.stack_size
         variables.stack_size = sym_stack_size
         variables.sym_link()
-        
+
         # OKAY HERE WE GO
         #print '\nConstraints:'
         #vexutils.columnize(str(x) for x in symrepr.constraints)

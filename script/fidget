@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 
-import sys, os, traceback
+import sys, traceback
 import ipdb
 import logging
-from fidget import patch_file
+from fidget import patch_file       # pylint: disable=import-self
 
 def addopt(options, option, argv):
     if option in ('v', 'verbose'):
@@ -121,6 +121,8 @@ Safety:
 """
 
 class CanonColors:
+    def __init__(self):
+        pass
     end = '\033[0m'
     time = '\033[30m'
     name = '\033[1m'
@@ -237,7 +239,7 @@ def main():
         for infile, outfile in zip(infiles, outfiles):
             try:
                 patch_file(infile, outfile, **options)
-            except:
+            except Exception:              # pylint: disable=broad-except
                 traceback.print_exc()
                 if debug:
                     ipdb.post_mortem(sys.exc_info()[2])
@@ -245,4 +247,5 @@ def main():
                     sys.exit(1)
 
 if __name__ == '__main__':
+    sys.setrecursionlimit(1000000)
     main()
