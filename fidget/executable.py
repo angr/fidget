@@ -24,7 +24,7 @@ class Executable(object):
 
         self.angr = Project(filename)
         self.native_word = self.angr.arch.bits
-        self.cfg = self.angr.construct_cfg()
+        self.cfg = self.angr.analyze('CFG').cfg
         self.funcman = self.cfg.function_manager
         if self.angr.arch.name not in processors:
             raise FidgetUnsupportedError("Unsupported archetecture " + self.angr.arch.name)
