@@ -238,6 +238,8 @@ def main():
         outfiles += [None] * (len(infiles) - len(outfiles))
         for infile, outfile in zip(infiles, outfiles):
             try:
+                if debug:
+                    ipdb.set_trace()
                 patch_file(infile, outfile, **options)
             except Exception:              # pylint: disable=broad-except
                 traceback.print_exc()
