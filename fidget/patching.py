@@ -63,10 +63,9 @@ class Fidget(object):
         # Find the real _start on MIPS so we don't touch it
         do_not_touch = None
         if self._binrepr.angr.arch.name == 'MIPS32':
-            bad_exits = self._binrepr.cfg.get_any_irsb(self._binrepr.angr.entry).exits()
-            toxic_exits = [e for e in bad_exits if e.default_exit and e.jumpkind == 'Ijk_Call']
-            if len(toxic_exits) > 0:
-                do_not_touch = toxic_exits[0].concretize()
+            bad_exit = self._binrepr.cfg.get_any_irsb(self._binrepr.angr.entry).default_exit
+            if bad_exit.jumpkind == 'Ijk_Call':
+                do_not_touch = bad_exit.concretize()
                 l.debug('Found MIPS entry point stub target %s', hex(do_not_touch))
 
         last_size = 0
@@ -86,7 +85,7 @@ class Fidget(object):
             # Only patch functions in the text section
             sec = self._binrepr.locate_physaddr(funcaddr)
             if sec is None or sec != 'text':
-                l.debug('Skipping function not in .text')
+                l.debug('Skipping function 0x%x not in .text', funcaddr)
                 continue
 
             # Check if the function is white/blacklisted
