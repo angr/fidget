@@ -7,8 +7,9 @@ class NetcatError(Exception):
     pass
 
 class Netcat:
-    def __init__(self, server=None, sock=None, listen=None, verbose=0):
+    def __init__(self, server=None, sock=None, listen=None, verbose=0, dohex=False):
         if sock is None:
+            self.dohex = dohex
             self.sock = pysocket.socket()
             if server is not None:
                 self.sock.connect(server)
@@ -48,7 +49,9 @@ class Netcat:
             ret = self.buf
             self.buf = ''
             if self.verbose and self.echo_recving:
-                if self.echo_perline:
+                if self.dohex:
+                    print ret.encode('hex')
+                elif self.echo_perline:
                     print_lines(ret, '<< ')
                 else:
                     print '<<', ret
@@ -63,7 +66,9 @@ class Netcat:
             raise NetcatError("Connection dropped!")
 
         if self.verbose and self.echo_recving:
-            if self.echo_perline:
+            if self.dohex:
+                print ret.encode('hex')
+            elif self.echo_perline:
                 print_lines(ret, '<< ')
             else:
                 print '<<', ret
@@ -80,7 +85,9 @@ class Netcat:
 
         ret = self.head_buf(self.buf.index(s)+len(s))
         if self.verbose and self.echo_recving:
-            if self.echo_perline:
+            if self.dohex:
+                print ret.encode('hex')
+            elif self.echo_perline:
                 print_lines(ret, '<< ')
             else:
                 print '<<', ret
@@ -91,7 +98,9 @@ class Netcat:
             print '======== Sending ({0}) ========'.format(len(s))
 
         if self.verbose and self.echo_sending:
-            if self.echo_perline:
+            if self.dohex:
+                print s.encode('hex')
+            elif self.echo_perline:
                 print_lines(s, '>> ')
             else:
                 print '>>', s

@@ -167,8 +167,8 @@ class BlockState:
             if addr.cleanval in self.stack_cache:
                 return self.stack_cache[addr.cleanval]
             return ConstExpression()
-        if addr.cleanval in self.binrepr.angr.main_binary.memory:
-            strval = ''.join(self.binrepr.angr.main_binary.memory[addr.cleanval + i] for i in xrange(size))
+        if addr.cleanval in self.binrepr.angr.ld.memory:
+            strval = ''.join(self.binrepr.angr.ld.memory[addr.cleanval + i] for i in xrange(size))
             return ConstExpression(self.binrepr.unpack_format(strval, size))
         #physaddr = self.binrepr.relocate_to_physaddr(addr.cleanval)
         #if physaddr is None:

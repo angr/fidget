@@ -24,7 +24,7 @@ class Executable(object):
 
         self.angr = Project(filename)
         self.native_word = self.angr.arch.bits
-        self.cfg = self.angr.analyze('CFG').cfg
+        self.cfg = self.angr.analyses.CFG()
         self.funcman = self.cfg.function_manager
         if self.angr.arch.name not in processors:
             raise FidgetUnsupportedError("Unsupported archetecture " + self.angr.arch.name)
@@ -86,4 +86,4 @@ class Executable(object):
         return self.angr.entry
 
     def read_memory(self, addr, size):
-        return ''.join(self.angr.main_binary.memory[addr + i] for i in xrange(size))
+        return ''.join(self.angr.ld.memory[addr + i] for i in xrange(size))
