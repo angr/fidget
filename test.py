@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 import os, sys, traceback
-dd = os.path.realpath(os.path.dirname(__file__))
-sd = os.path.join(dd, 'tests', 'scripts')
+dd = os.path.dirname(__file__)
+sd = os.path.realpath(os.path.join(dd, 'tests', 'scripts'))
 sys.path.append(sd)
 os.chdir(dd)
 import tests
@@ -45,30 +45,6 @@ def test_test_loops_armel():
 def test_test_division_armel():
     os.chdir(dd)
     tests.make_test_function("test_division_armel")()
-
-def test_test_arrays_armhf():
-    os.chdir(dd)
-    tests.make_test_function("test_arrays_armhf")()
-
-def test_test_loops_armhf():
-    os.chdir(dd)
-    tests.make_test_function("test_loops_armhf")()
-
-def test_test_division_armhf():
-    os.chdir(dd)
-    tests.make_test_function("test_division_armhf")()
-
-def test_test_arrays_aarch64():
-    os.chdir(dd)
-    tests.make_test_function("test_arrays_aarch64")()
-
-def test_test_loops_aarch64():
-    os.chdir(dd)
-    tests.make_test_function("test_loops_aarch64")()
-
-def test_test_division_aarch64():
-    os.chdir(dd)
-    tests.make_test_function("test_division_aarch64")()
 
 def test_test_arrays_ppc():
     os.chdir(dd)
@@ -126,19 +102,11 @@ def test_ctf_x86():
     os.chdir(dd)
     tests.make_test_function("ctf_x86")()
 
-def test_ctf_armhf():
-    os.chdir(dd)
-    tests.make_test_function("ctf_armhf")()
-
 def test_ctf_ppc():
     os.chdir(dd)
     tests.make_test_function("ctf_ppc")()
 
-def test_ctf_aarch64():
-    os.chdir(dd)
-    tests.make_test_function("ctf_aarch64")()
-
-funcs = [test_test_arrays_amd64, test_test_loops_amd64, test_test_division_amd64, test_test_arrays_x86, test_test_loops_x86, test_test_division_x86, test_test_arrays_armel, test_test_loops_armel, test_test_division_armel, test_test_arrays_armhf, test_test_loops_armhf, test_test_division_armhf, test_test_arrays_aarch64, test_test_loops_aarch64, test_test_division_aarch64, test_test_arrays_ppc, test_test_loops_ppc, test_test_division_ppc, test_test_arrays_ppc64, test_test_loops_ppc64, test_test_division_ppc64, test_test_arrays_mips, test_test_loops_mips, test_test_division_mips, test_test_arrays_mipsel, test_test_loops_mipsel, test_test_division_mipsel, test_ctf_amd64, test_ctf_x86, test_ctf_armhf, test_ctf_ppc, test_ctf_aarch64]
+funcs = [test_test_arrays_amd64, test_test_loops_amd64, test_test_division_amd64, test_test_arrays_x86, test_test_loops_x86, test_test_division_x86, test_test_arrays_armel, test_test_loops_armel, test_test_division_armel, test_test_arrays_ppc, test_test_loops_ppc, test_test_division_ppc, test_test_arrays_ppc64, test_test_loops_ppc64, test_test_division_ppc64, test_test_arrays_mips, test_test_loops_mips, test_test_division_mips, test_test_arrays_mipsel, test_test_loops_mipsel, test_test_division_mipsel, test_ctf_amd64, test_ctf_x86, test_ctf_ppc]
 
 if __name__ == '__main__':
     setup_module()
