@@ -76,3 +76,7 @@ It will come in the night. Rearrange your binaries. You won't notice it at first
 you do, it will eat away at your psyche and you will eventually go insane. Nobody will
 believe you. Your own binaries? Being rearranged without altering their functionality?
 Unheard of. So your stack frames are putting on some weight. Nothing to be ashamed of.
+But still. They grow larger and larger. One night you awaken in a cold sweat to the sound
+of a segfault. Looking around wildly you see that your stack has overflown. What should
+have been a simple O(n log n) recursive algorithm has gained such a huge constant factor
+through expanded stacks that it cannot handle an average data set.
