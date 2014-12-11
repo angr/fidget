@@ -73,4 +73,6 @@ The Future
 Fidget will be greatly improved when it learns to use Angr's VFG and variable detection
 capacities. Greatly, greatly improved. Like so improved. So improved you should be afraid.
 It will come in the night. Rearrange your binaries. You won't notice it at first, but when
-you do, it will eat away at your psyche and you will eventually go insane.
+you do, it will eat away at your psyche and you will eventually go insane. Nobody will
+believe you. Your own binaries? Being rearranged without altering their functionality?
+Unheard of.
