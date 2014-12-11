@@ -79,4 +79,4 @@ Unheard of. So your stack frames are putting on some weight. Nothing to be asham
 But still. They grow larger and larger. One night you awaken in a cold sweat to the sound
 of a segfault. Looking around wildly you see that your stack has overflown. What should
 have been a simple O(n log n) recursive algorithm has gained such a huge constant factor
-through expanded stacks that it cannot handle an average data set.
+through expanded stacks that it cannot handle an average data set. You are forever ruined.
