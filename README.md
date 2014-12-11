@@ -75,4 +75,4 @@ capacities. Greatly, greatly improved. Like so improved. So improved you should 
 It will come in the night. Rearrange your binaries. You won't notice it at first, but when
 you do, it will eat away at your psyche and you will eventually go insane. Nobody will
 believe you. Your own binaries? Being rearranged without altering their functionality?
-Unheard of.
+Unheard of. So your stack frames are putting on some weight. Nothing to be ashamed of.
