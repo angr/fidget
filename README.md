@@ -71,4 +71,4 @@ The Future
 ----------
 
 Fidget will be greatly improved when it learns to use Angr's VFG and variable detection
-capacities. Greatly, greatly improved. Like so improved.
+capacities. Greatly, greatly improved. Like so improved. So improved you should be afraid.
