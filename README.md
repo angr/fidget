@@ -67,4 +67,8 @@ Current caveats
 - May break executables that use structs accessed with instance.field on the stack
 - May break executables that use arrays accessed both in a loop and with instance[index]
 
+The Future
+----------
 
+Fidget will be greatly improved when it learns to use Angr's VFG and variable detection
+capacities. Greatly, greatly improved.
