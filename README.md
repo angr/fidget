@@ -57,16 +57,8 @@ to specify `-v --nocapture --nologcapture` for your own sanity.
 It can also be run as an actual script, which will run all the tests and format the 
 results similarly to nosetests. No comment on how long I spent getting this working.
 
-Currently, the best known test results fail only on the following tests:
-- `test_arrays_armhf`, `test_loops_armhf`, and `test_division_armhf` fail because they 
-  are thumb mode and cfgs for thumb mode are lolnotworking in angr.
-- `test_arrays_aarch64`, `test_loops_aarch64`, `test_division_aarch64`, and `ctf_aarch64`
-  fail because aarch64 is unsupported. Dur.
-- `ctf_armhf` fails because not only is it thumb, I can't frigging get the exploit to 
-  actually work! Gah.
-
-And on that note, `ctf_ppc` will pass its tests, even though it is _slightly_ broken after
-being run through fidget. Blame angr.CFG for not being able to follow jump tables.
+All tests pass as far as I know. There are more test cases, but they are for unsupported
+architectures (thumb and aarch64) and thus will not pass for a very long time.
 
 Current caveats
 ---------------
