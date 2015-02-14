@@ -253,7 +253,7 @@ class BinaryData():
         # Round 1
         newblock = self.binrepr.make_irsb(self.get_patched_instruction(tog[0]), self.armthumb)
         i = None
-        for oldstmt, newstmt in zip(self.insvex.statements(), newblock.statements()):
+        for oldstmt, newstmt in zip(self.insvex.statements, newblock.statements):
             if i == self.path[0]:
                 if not vexutils.equals_except(oldstmt, newstmt, self.path[1:], self.binrepr.unsign_int(tog[0], size)):
                     return False
@@ -273,7 +273,7 @@ class BinaryData():
         # Round 2
         newblock = self.binrepr.make_irsb(self.get_patched_instruction(tog[1]-1), self.armthumb)
         i = None
-        for oldstmt, newstmt in zip(self.insvex.statements(), newblock.statements()):
+        for oldstmt, newstmt in zip(self.insvex.statements, newblock.statements):
             if i == self.path[0]:
                 if not vexutils.equals_except(oldstmt, newstmt, self.path[1:], self.binrepr.unsign_int(tog[1]-1, size)):
                     return False

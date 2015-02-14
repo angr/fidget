@@ -20,7 +20,7 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
         mark = None
         pathindex = 0
         block = binrepr.angr.block(blockstate.addr)
-        for stmt in block.statements():
+        for stmt in block.statements:
             if stmt.tag == 'Ist_IMark':
                 mark = stmt
                 cache.add(mark.addr)
@@ -187,7 +187,7 @@ class BlockState:
 
     def assign(self, vextatement, expression, line):
         if vextatement.tag == 'Ist_WrTmp':
-            size = vexutils.extract_int(self.irsb.tyenv.typeOf(vextatement.tmp))
+            size = vexutils.extract_int(self.irsb.tyenv.types[vextatement.tmp])
             expression.dirtyval = vexutils.ZExtTo(size, expression.dirtyval)
             self.temps[vextatement.tmp] = expression
         elif vextatement.tag == 'Ist_Put':
@@ -234,7 +234,14 @@ class SmartExpression:
             self.blockstate.access(addr_expression, AccessType.READ)
             size = vexutils.extract_int(vexpression.type) / 8
             self.copy_to_self(self.blockstate.get_mem(addr_expression, size))
-        elif vexpression.tag == 'Iex_Const' or dir(vexpression)[0] == 'F32': # TODO: Make this not a hack
+        elif vexpression.tag == 'Iex_Const' or vexpression.tag.startswith('Ico_'):
+            if vexpression.tag == 'Iex_Const':
+                vexpression = vexpression.con
+            size = vexutils.extract_int(vexpression.tag)
+            self.cleanval = self.binrepr.resign_int(vexpression.value, size)
+            self.dirtyval = self.symrepr._claripy.BitVec('%x_%d' % (mark.addr, path[0]), size)
+            self.rootval = True
+        elif vexpression.tag.startswith('Ico'):
             if vexpression.tag == 'Iex_Const':
                 vexpression = vexpression.con
             size = vexutils.extract_int(vexpression.tag)
@@ -251,8 +258,8 @@ class SmartExpression:
                 self.copy_to_self(false_expr)
             SmartExpression(blockstate, vexpression.cond, mark, path + ['cond'])
         elif vexpression.tag in ('Iex_Unop','Iex_Binop','Iex_Triop','Iex_Qop'):
-            for i, expr in enumerate(vexpression.args()):
-                self.deps.append(SmartExpression(blockstate, expr, mark, path + ['arg%d' % (i+1)]))
+            for i, expr in enumerate(vexpression.args):
+                self.deps.append(SmartExpression(blockstate, expr, mark, path + ['args', i]))
             opsize = vexutils.extract_int(vexpression.op)
             if vexpression.op.endswith('to1'):
                 if self.deps[0].cleanval != 0:

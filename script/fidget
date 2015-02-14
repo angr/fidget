@@ -241,7 +241,7 @@ def main():
                 if debug:
                     ipdb.set_trace()
                 patch_file(infile, outfile, **options)
-            except Exception:              # pylint: disable=broad-except
+            except (Exception, KeyboardInterrupt):              # pylint: disable=broad-except
                 traceback.print_exc()
                 if debug:
                     ipdb.post_mortem(sys.exc_info()[2])
