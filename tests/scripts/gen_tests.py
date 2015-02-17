@@ -66,9 +66,9 @@ def test_{0}():
 
     funcs.append('test_' + binary)
 
-arches = ['amd64', 'x86', 'armel', 'armhf', 'aarch64', 'ppc', 'ppc64', 'mips', 'mipsel']
+arches = ['amd64', 'x86', 'armel', 'ppc', 'ppc64', 'mips', 'mipsel']
 tests = ['arrays', 'loops', 'division']
-ctfs = ['amd64', 'x86', 'armhf', 'ppc', 'aarch64']
+ctfs = ['amd64', 'x86', 'ppc']
 
 for arch in arches:
     for test in tests:

@@ -33,11 +33,11 @@ def equals(a, b):
     elif a.tag == 'Iex_Load':
         return equals(a.addr, b.addr)
     elif a.tag == 'Iex_Unop':
-        return a.op == b.op and equals(a.arg1, b.arg1)
+        return a.op == b.op and equals(a.args[0], b.args[0])
     elif a.tag == 'Iex_Binop':
-        return a.op == b.op and equals(a.arg1, b.arg1) and equals(a.arg2, b.arg2)
+        return a.op == b.op and equals(a.args[0], b.args[0]) and equals(a.args[1], b.args[1])
     elif a.tag == 'Iex_Triop':
-        return a.op == b.op and equals(a.arg1, b.arg1) and equals(a.arg2, b.arg2) and equals(a.arg3, b.arg3)
+        return a.op == b.op and equals(a.args[0], b.args[0]) and equals(a.args[1], b.args[1]) and equals(a.args[2], b.args[2])
     elif a.tag == 'Iex_CCall':
         return True     # Nope.
     elif a.tag == 'Iex_ITE':
@@ -46,7 +46,7 @@ def equals(a, b):
         raise FidgetUnsupportedError("Unknown tag (comparison): {}".format(a.tag))
 
 def is_tmp_used(block, tmp):
-    for stmt in block.statements():
+    for stmt in block.statements:
         if stmt.tag in ('Ist_NoOp', 'Ist_IMark'):
             continue
         elif stmt.tag in ('Ist_Put', 'Ist_WrTmp'):
@@ -68,7 +68,7 @@ def is_tmp_in_expression(expr, tmp):
     elif expr.tag == 'Iex_Load':
         return is_tmp_in_expression(expr.addr, tmp)
     elif expr.tag in ('Iex_Unop', 'Iex_Binop', 'Iex_Triop'):
-        for arg in expr.args():
+        for arg in expr.args:
             if is_tmp_in_expression(arg, tmp): return True
         return False
     elif expr.tag == 'Iex_ITE':
@@ -91,8 +91,11 @@ def _get_from_path(obj, path):
     if len(path) == 0: return obj
     key = path.pop(0)
     if type(key) == int or type(obj) == dict:
-        if key not in obj: return None
-        return _get_from_path(obj[key], path)
+        try:
+            item = obj[key]
+        except:
+            return None
+        return _get_from_path(item, path)
     if not hasattr(obj, key): return None
     return _get_from_path(getattr(obj, key), path)
 
@@ -132,7 +135,7 @@ def equals_except(a, b, path, val):
 # are frigging no-ops everywhere.
 
 def get_stmt_num(block, n):
-    stmt_iterator = iter(block.statements())
+    stmt_iterator = iter(block.statements)
     for stmt in stmt_iterator:
         if stmt.tag == 'Ist_IMark':
             break
