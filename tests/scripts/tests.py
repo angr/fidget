@@ -46,19 +46,16 @@ def make_test_function(binary):
 def generic_ctf_test(binary, tester, always, winner):
     nose.tools.assert_in(binary, os.listdir('tests'))
 
-    os.chdir('tests')
-    process = boot(binary)
-    try:
-        testdata = tester()
-        testdata2 = tester()
-    finally:
-        process.kill()
-        os.chdir('..')
+    #os.chdir('tests')
+    #process = boot(binary)
+    #try:
+    #    testdata = tester()
+    #finally:
+    #    process.kill()
+    #    os.chdir('..')
 
-    nose.tools.assert_in(always, testdata)
-    nose.tools.assert_in(winner, testdata)
-    nose.tools.assert_in(always, testdata2)
-    nose.tools.assert_in(winner, testdata2)
+    #nose.tools.assert_in(always, testdata)
+    #nose.tools.assert_in(winner, testdata)
 
     fidgetress = Fidget('tests/' + binary)
     fidgetress.patch()
@@ -71,15 +68,12 @@ def generic_ctf_test(binary, tester, always, winner):
     process = boot(binary + '.out')
     try:
         testdata = tester()
-        testdata2 = tester()
     finally:
         process.kill()
         os.chdir('..')
 
     nose.tools.assert_in(always, testdata)
     nose.tools.assert_not_in(winner, testdata)
-    nose.tools.assert_in(always, testdata2)
-    nose.tools.assert_not_in(winner, testdata2)
 
 def generic_test(binary, expected):
     nose.tools.assert_in(binary, os.listdir('tests'))
