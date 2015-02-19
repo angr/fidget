@@ -258,132 +258,172 @@ class SmartExpression:
                 self.copy_to_self(false_expr)
             SmartExpression(blockstate, vexpression.cond, mark, path + ['cond'])
         elif vexpression.tag in ('Iex_Unop','Iex_Binop','Iex_Triop','Iex_Qop'):
-            for i, expr in enumerate(vexpression.args):
-                self.deps.append(SmartExpression(blockstate, expr, mark, path + ['args', i]))
-            opsize = vexutils.extract_int(vexpression.op)
-            if vexpression.op.endswith('to1'):
-                if self.deps[0].cleanval != 0:
-                    self.cleanval = 1
-                self.dirtyval = 0 # TODO: ????
-            elif vexpression.op.startswith('Iop_Not'):
-                self.cleanval = self.deps[0].cleanval ^ ((1 << opsize) - 1)
-                self.dirtyval = ~self.deps[0].dirtyval
-            elif vexpression.op.startswith('Iop_Sub'):
-                self.cleanval = self.deps[0].cleanval - self.deps[1].cleanval
-                self.dirtyval = self.deps[0].dirtyval - self.deps[1].dirtyval
-                self.stack_addr = self.deps[0].stack_addr and not self.deps[1].stack_addr
-            elif vexpression.op.startswith('Iop_Add'):
-                self.cleanval = self.deps[0].cleanval + self.deps[1].cleanval
-                self.dirtyval = self.deps[0].dirtyval + self.deps[1].dirtyval
-                self.stack_addr = self.deps[0].stack_addr or self.deps[1].stack_addr
-            elif vexpression.op.startswith('Iop_Mul'):
-                self.shield_constants(self.deps)
-                self.cleanval = self.deps[0].cleanval * self.deps[1].cleanval
-                self.dirtyval = self.deps[0].dirtyval * self.deps[1].dirtyval
-            elif vexpression.op.startswith('Iop_Div'):
-                self.cleanval = self.deps[0].cleanval * self.deps[1].cleanval
-                self.dirtyval = self.deps[0].dirtyval * self.deps[1].dirtyval
-            elif vexpression.op.startswith('Iop_And'):
-                self.shield_constants(self.deps)
-                self.cleanval = self.deps[0].cleanval & self.deps[1].cleanval
-                self.dirtyval = self.deps[0].dirtyval & self.deps[1].dirtyval
-                self.stack_addr = self.deps[0].stack_addr or self.deps[1].stack_addr
-            elif vexpression.op.startswith('Iop_Or'):
-                self.cleanval = self.deps[0].cleanval | self.deps[1].cleanval
-                self.dirtyval = self.deps[0].dirtyval | self.deps[1].dirtyval
-                self.stack_addr = self.deps[0].stack_addr or self.deps[1].stack_addr
-            elif vexpression.op.startswith('Iop_Xor'):
-                self.cleanval = self.deps[0].cleanval ^ self.deps[1].cleanval
-                self.dirtyval = self.deps[0].dirtyval ^ self.deps[1].dirtyval
-                self.stack_addr = self.deps[0].stack_addr or self.deps[1].stack_addr
-            elif vexpression.op.startswith('Iop_Shl'):
-                self.cleanval = self.deps[0].cleanval << self.deps[1].cleanval
-                self.dirtyval = self.deps[0].dirtyval << vexutils.ZExtTo(opsize, self.deps[1].dirtyval)
-            elif vexpression.op.startswith('Iop_Sar'):
-                self.cleanval = self.deps[0].cleanval << self.deps[1].cleanval
-                self.dirtyval = self.deps[0].dirtyval << vexutils.ZExtTo(opsize, self.deps[1].dirtyval)
-            elif vexpression.op.startswith('Iop_Shr'):
-                self.cleanval = self.deps[0].cleanval << self.deps[1].cleanval
-                if type(self.deps[0].dirtyval) in (int, long) or type(self.deps[1].dirtyval) in (int, long):
-                    self.dirtyval = self.deps[0].dirtyval << self.deps[1].dirtyval
+            try:
+                for i, expr in enumerate(vexpression.args):
+                    self.deps.append(SmartExpression(blockstate, expr, mark, path + ['args', i]))
+                opsize = vexutils.extract_int(vexpression.op)
+                if vexpression.op.endswith('to1'):
+                    if self.deps[0].cleanval != 0:
+                        self.cleanval = 1
+                    self.dirtyval = 0 # TODO: ????
+                elif vexpression.op.startswith('Iop_Not'):
+                    self.cleanval = self.deps[0].cleanval ^ ((1 << opsize) - 1)
+                    self.dirtyval = ~self.deps[0].dirtyval
+                elif vexpression.op.startswith('Iop_Sub'):
+                    self.cleanval = self.deps[0].cleanval - self.deps[1].cleanval
+                    self.dirtyval = self.deps[0].dirtyval - self.deps[1].dirtyval
+                    self.stack_addr = self.deps[0].stack_addr and not self.deps[1].stack_addr
+                elif vexpression.op.startswith('Iop_Add'):
+                    self.cleanval = self.deps[0].cleanval + self.deps[1].cleanval
+                    self.dirtyval = self.deps[0].dirtyval + self.deps[1].dirtyval
+                    self.stack_addr = self.deps[0].stack_addr or self.deps[1].stack_addr
+                elif vexpression.op.startswith('Iop_Mul'):
+                    self.shield_constants(self.deps)
+                    self.cleanval = self.deps[0].cleanval * self.deps[1].cleanval
+                    self.dirtyval = self.deps[0].dirtyval * self.deps[1].dirtyval
+                elif vexpression.op.startswith('Iop_Div') and ('Mod' not in vexpression.op):
+                    self.cleanval = self.deps[0].cleanval / self.deps[1].cleanval
+                    self.dirtyval = self.deps[0].dirtyval / self.deps[1].dirtyval
+                elif vexpression.op.startswith('Iop_And'):
+                    self.shield_constants(self.deps)
+                    self.cleanval = self.deps[0].cleanval & self.deps[1].cleanval
+                    self.dirtyval = self.deps[0].dirtyval & self.deps[1].dirtyval
+                    self.stack_addr = self.deps[0].stack_addr or self.deps[1].stack_addr
+                elif vexpression.op.startswith('Iop_Or'):
+                    self.cleanval = self.deps[0].cleanval | self.deps[1].cleanval
+                    self.dirtyval = self.deps[0].dirtyval | self.deps[1].dirtyval
+                    self.stack_addr = self.deps[0].stack_addr or self.deps[1].stack_addr
+                elif vexpression.op.startswith('Iop_Xor'):
+                    self.cleanval = self.deps[0].cleanval ^ self.deps[1].cleanval
+                    self.dirtyval = self.deps[0].dirtyval ^ self.deps[1].dirtyval
+                    self.stack_addr = self.deps[0].stack_addr or self.deps[1].stack_addr
+                elif vexpression.op.startswith('Iop_Shl'):
+                    self.cleanval = self.deps[0].cleanval << self.deps[1].cleanval
+                    self.dirtyval = self.deps[0].dirtyval << vexutils.ZExtTo(opsize, self.deps[1].dirtyval)
+                elif vexpression.op.startswith('Iop_Sar'):
+                    self.cleanval = self.deps[0].cleanval << self.deps[1].cleanval
+                    self.dirtyval = self.deps[0].dirtyval << vexutils.ZExtTo(opsize, self.deps[1].dirtyval)
+                elif vexpression.op.startswith('Iop_Shr'):
+                    self.cleanval = self.deps[0].cleanval << self.deps[1].cleanval
+                    if type(self.deps[0].dirtyval) in (int, long) or type(self.deps[1].dirtyval) in (int, long):
+                        self.dirtyval = self.deps[0].dirtyval << self.deps[1].dirtyval
+                    else:
+                        self.dirtyval = self.symrepr._claripy.LShR(self.deps[0].dirtyval, vexutils.ZExtTo(opsize, self.deps[1].dirtyval))
+                elif vexpression.op == 'Iop_DivModU64to32':
+                    cvd = (self.deps[0].cleanval / self.deps[1].cleanval) & (2**32-1)
+                    cvm = (self.deps[0].cleanval % self.deps[1].cleanval) & (2**32-1)
+                    self.cleanval = (cvm << 32) | cvd
+                    dvd = (self.deps[0].dirtyval / vexutils.ZExtTo(64, self.deps[1].dirtyval))[31:0]
+                    dvm = (self.deps[0].dirtyval % vexutils.ZExtTo(64, self.deps[1].dirtyval))[31:0]
+                    self.dirtyval = self.symrepr._claripy.Concat(dvm, dvd)
+                elif vexpression.op == 'Iop_DivModS64to32':
+                    cvd = (self.deps[0].cleanval / self.deps[1].cleanval) & (2**32-1)
+                    cvm = (self.deps[0].cleanval % self.deps[1].cleanval) & (2**32-1)
+                    self.cleanval = (cvm << 32) | cvd
+                    dvd = (self.deps[0].dirtyval / vexutils.SExtTo(64, self.deps[1].dirtyval))[31:0]
+                    dvm = (self.deps[0].dirtyval % vexutils.SExtTo(64, self.deps[1].dirtyval))[31:0]
+                    self.dirtyval = self.symrepr._claripy.Concat(dvm, dvd)
+                elif vexpression.op == 'Iop_DivModU128to64':
+                    cvd = (self.deps[0].cleanval / self.deps[1].cleanval) & (2**64-1)
+                    cvm = (self.deps[0].cleanval % self.deps[1].cleanval) & (2**64-1)
+                    self.cleanval = (cvm << 64) | cvd
+                    dvd = (self.deps[0].dirtyval / vexutils.ZExtTo(128, self.deps[1].dirtyval))[63:0]
+                    dvm = (self.deps[0].dirtyval % vexutils.ZExtTo(128, self.deps[1].dirtyval))[63:0]
+                    self.dirtyval = self.symrepr._claripy.Concat(dvm, dvd)
+                elif vexpression.op == 'Iop_DivModS128to64':
+                    cvd = (self.deps[0].cleanval / self.deps[1].cleanval) & (2**64-1)
+                    cvm = (self.deps[0].cleanval % self.deps[1].cleanval) & (2**64-1)
+                    self.cleanval = (cvm << 64) | cvd
+                    dvd = (self.deps[0].dirtyval / vexutils.SExtTo(128, self.deps[1].dirtyval))[63:0]
+                    dvm = (self.deps[0].dirtyval % vexutils.SExtTo(128, self.deps[1].dirtyval))[63:0]
+                    self.dirtyval = self.symrepr._claripy.Concat(dvm, dvd)
+                elif vexpression.op == 'Iop_DivModS64to64':
+                    cvd = self.deps[0].cleanval / self.deps[1].cleanval
+                    cvm = self.deps[0].cleanval % self.deps[1].cleanval
+                    self.cleanval = (cvm << 64) | cvd
+                    dvd = self.deps[0].dirtyval / self.deps[1].dirtyval
+                    dvm = self.deps[0].dirtyval % self.deps[1].dirtyval
+                    self.dirtyval = self.symrepr._claripy.Concat(dvm, dvd)
+                elif vexpression.op in ('Iop_1Uto64', 'Iop_1Uto32', 'Iop_1Uto16', 'Iop_1Uto8'):
+                    pass # Why does this even
+                elif vexpression.op in ('Iop_128to8', 'Iop_64to8', 'Iop_32to8', 'Iop_16to8'):
+                    self.cleanval = self.deps[0].cleanval
+                    self.dirtyval = vexutils.ZExtTo(8, self.deps[0].dirtyval)
+                elif vexpression.op in ('Iop_8Sto16',):
+                    self.cleanval = self.deps[0].cleanval
+                    self.dirtyval = vexutils.SExtTo(16, self.deps[0].dirtyval)
+                elif vexpression.op in ('Iop_128to16', 'Iop_64to16', 'Iop_32to16', 'Iop_8Uto16'):
+                    self.cleanval = self.deps[0].cleanval
+                    self.dirtyval = vexutils.ZExtTo(16, self.deps[0].dirtyval)
+                elif vexpression.op in ('Iop_16Sto32', 'Iop_8Sto32'):
+                    self.cleanval = self.deps[0].cleanval
+                    self.dirtyval = vexutils.SExtTo(32, self.deps[0].dirtyval)
+                elif vexpression.op in ('Iop_128to32', 'Iop_64to32', 'Iop_16Uto32', 'Iop_8Uto32'):
+                    self.cleanval = self.deps[0].cleanval
+                    self.dirtyval = vexutils.ZExtTo(32, self.deps[0].dirtyval)
+                elif vexpression.op in ('Iop_32Sto64', 'Iop_16Sto64', 'Iop_8Sto64'):
+                    self.cleanval = self.deps[0].cleanval
+                    self.dirtyval = vexutils.SExtTo(64, self.deps[0].dirtyval)
+                elif vexpression.op in ('Iop_128to64', 'Iop_32Uto64', 'Iop_16Uto64', 'Iop_8Uto64'):
+                    self.cleanval = self.deps[0].cleanval
+                    self.dirtyval = vexutils.ZExtTo(64, self.deps[0].dirtyval)
+                elif vexpression.op in ('Iop_64Sto128', 'Iop_32Sto128', 'Iop_16Sto128', 'Iop_8Sto128'):
+                    self.cleanval = self.deps[0].cleanval
+                    self.dirtyval = vexutils.SExtTo(128, self.deps[0].dirtyval)
+                elif vexpression.op in ('Iop_64Uto128', 'Iop_32Uto128', 'Iop_16Uto128', 'Iop_8Uto128'):
+                    self.cleanval = self.deps[0].cleanval
+                    self.dirtyval = vexutils.ZExtTo(128, self.deps[0].dirtyval)
+                elif vexpression.op in ('Iop_16HIto8',):
+                    self.cleanval = self.deps[0].cleanval >> 8
+                    self.dirtyval = self.deps[0].dirtyval >> 8 if type(self.deps[0].dirtyval) in (int, long) else self.deps[0].dirtyval[15:8]
+                elif vexpression.op in ('Iop_32HIto16',):
+                    self.cleanval = self.deps[0].cleanval >> 16
+                    self.dirtyval = self.deps[0].dirtyval >> 16 if type(self.deps[0].dirtyval) in (int, long) else self.deps[0].dirtyval[31:16]
+                elif vexpression.op in ('Iop_64HIto32',):
+                    self.cleanval = self.deps[0].cleanval >> 32
+                    self.dirtyval = self.deps[0].dirtyval >> 32 if type(self.deps[0].dirtyval) in (int, long) else self.deps[0].dirtyval[63:32]
+                elif vexpression.op in ('Iop_128HIto64',):
+                    self.cleanval = self.deps[0].cleanval >> 64
+                    self.dirtyval = self.deps[0].dirtyval >> 64 if type(self.deps[0].dirtyval) in (int, long) else self.deps[0].dirtyval[127:64]
+                elif vexpression.op == 'Iop_32HLto64':
+                    self.cleanval = (self.deps[0].cleanval << 32) | self.deps[1].cleanval
+                    a1 = vexutils.ZExtTo(64, self.deps[0].dirtyval)
+                    a2 = vexutils.ZExtTo(64, self.deps[1].dirtyval)
+                    self.dirtyval = (a1 << 32) | a2
+                elif vexpression.op == 'Iop_64HLto128':
+                    self.cleanval = (self.deps[0].cleanval << 64) | self.deps[1].cleanval
+                    a1 = vexutils.ZExtTo(128, self.deps[0].dirtyval)
+                    a2 = vexutils.ZExtTo(128, self.deps[1].dirtyval)
+                    self.dirtyval = self.symrepr._claripy.Concat(a1, a2)
+                elif 'Cmp' in vexpression.op:
+                    self.cleanval = 0
+                    self.dirtyval = 0
+                    self.deps = []
+                elif vexpression.op.startswith('Iop_Clz'):
+                    self.cleanval = 0
+                    tmp_clean = self.deps[0].cleanval
+                    for _ in xrange(opsize):
+                        tmp_clean <<= 1
+                        if tmp_clean >= (1 << opsize):
+                            break
+                        self.cleanval += 1
+                    self.dirtyval = 0 # Nope, fuck this
+                elif vexpression.op.startswith('Iop_Ctz'):
+                    self.cleanval = 0
+                    tmp_clean = self.deps[0].cleanval
+                    for _ in xrange(opsize):
+                        if tmp_clean % 2 == 1:
+                            break
+                        tmp_clean >>= 1
+                        self.cleanval += 1
+                    self.dirtyval = 0 # Again with the Fucking of This
+
                 else:
-                    self.dirtyval = self.symrepr._claripy.LShR(self.deps[0].dirtyval, vexutils.ZExtTo(opsize, self.deps[1].dirtyval))
-            elif vexpression.op in ('Iop_1Uto64', 'Iop_1Uto32', 'Iop_1Uto16', 'Iop_1Uto8'):
-                pass # Why does this even
-            elif vexpression.op in ('Iop_128to8', 'Iop_64to8', 'Iop_32to8', 'Iop_16to8'):
-                self.cleanval = self.deps[0].cleanval
-                self.dirtyval = vexutils.ZExtTo(8, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_8Sto16',):
-                self.cleanval = self.deps[0].cleanval
-                self.dirtyval = vexutils.SExtTo(16, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_128to16', 'Iop_64to16', 'Iop_32to16', 'Iop_8Uto16'):
-                self.cleanval = self.deps[0].cleanval
-                self.dirtyval = vexutils.ZExtTo(16, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_16Sto32', 'Iop_8Sto32'):
-                self.cleanval = self.deps[0].cleanval
-                self.dirtyval = vexutils.SExtTo(32, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_128to32', 'Iop_64to32', 'Iop_16Uto32', 'Iop_8Uto32'):
-                self.cleanval = self.deps[0].cleanval
-                self.dirtyval = vexutils.ZExtTo(32, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_32Sto64', 'Iop_16Sto64', 'Iop_8Sto64'):
-                self.cleanval = self.deps[0].cleanval
-                self.dirtyval = vexutils.SExtTo(64, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_128to64', 'Iop_32Uto64', 'Iop_16Uto64', 'Iop_8Uto64'):
-                self.cleanval = self.deps[0].cleanval
-                self.dirtyval = vexutils.ZExtTo(64, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_64Sto128', 'Iop_32Sto128', 'Iop_16Sto128', 'Iop_8Sto128'):
-                self.cleanval = self.deps[0].cleanval
-                self.dirtyval = vexutils.SExtTo(128, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_64Uto128', 'Iop_32Uto128', 'Iop_16Uto128', 'Iop_8Uto128'):
-                self.cleanval = self.deps[0].cleanval
-                self.dirtyval = vexutils.ZExtTo(128, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_16HIto8',):
-                self.cleanval = self.deps[0].cleanval >> 8
-                self.dirtyval = self.deps[0].dirtyval >> 8 if type(self.deps[0].dirtyval) in (int, long) else self.deps[0].dirtyval[15:8]
-            elif vexpression.op in ('Iop_32HIto16',):
-                self.cleanval = self.deps[0].cleanval >> 16
-                self.dirtyval = self.deps[0].dirtyval >> 16 if type(self.deps[0].dirtyval) in (int, long) else self.deps[0].dirtyval[31:16]
-            elif vexpression.op in ('Iop_64HIto32',):
-                self.cleanval = self.deps[0].cleanval >> 32
-                self.dirtyval = self.deps[0].dirtyval >> 32 if type(self.deps[0].dirtyval) in (int, long) else self.deps[0].dirtyval[63:32]
-            elif vexpression.op in ('Iop_128HIto64',):
-                self.cleanval = self.deps[0].cleanval >> 64
-                self.dirtyval = self.deps[0].dirtyval >> 64 if type(self.deps[0].dirtyval) in (int, long) else self.deps[0].dirtyval[127:64]
-            elif vexpression.op == 'Iop_32HLto64':
-                self.cleanval = (self.deps[0].cleanval << 32) | self.deps[1].cleanval
-                a1 = vexutils.ZExtTo(64, self.deps[0].dirtyval)
-                a2 = vexutils.ZExtTo(64, self.deps[1].dirtyval)
-                self.dirtyval = (a1 << 32) | a2
-            elif vexpression.op == 'Iop_64HLto128':
-                self.cleanval = (self.deps[0].cleanval << 64) | self.deps[1].cleanval
-                a1 = vexutils.ZExtTo(128, self.deps[0].dirtyval)
-                a2 = vexutils.ZExtTo(128, self.deps[1].dirtyval)
-                self.dirtyval = (a1 << 64) | a2
-            elif 'Cmp' in vexpression.op:
+                    raise FidgetUnsupportedError('Unknown operator ({:#x}): {!r}'.format(mark.addr, vexpression.op))
+            except ZeroDivisionError:
                 self.cleanval = 0
                 self.dirtyval = 0
                 self.deps = []
-            elif vexpression.op.startswith('Iop_Clz'):
-                self.cleanval = 0
-                tmp_clean = self.deps[0].cleanval
-                for _ in xrange(opsize):
-                    tmp_clean <<= 1
-                    if tmp_clean >= (1 << opsize):
-                        break
-                    self.cleanval += 1
-                self.dirtyval = 0 # Nope, fuck this
-            elif vexpression.op.startswith('Iop_Ctz'):
-                self.cleanval = 0
-                tmp_clean = self.deps[0].cleanval
-                for _ in xrange(opsize):
-                    if tmp_clean % 2 == 1:
-                        break
-                    tmp_clean >>= 1
-                    self.cleanval += 1
-                self.dirtyval = 0 # Again with the Fucking of This
-
-            else:
-                raise FidgetUnsupportedError('Unknown operator ({:#x}): {!r}'.format(mark.addr, vexpression.op))
         elif vexpression.tag == 'Iex_CCall':
             pass
         else:
