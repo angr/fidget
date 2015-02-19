@@ -82,8 +82,5 @@ class Executable(object):
     def call_pushes_ret(self):
         return self.processor in (0, 1)
 
-    def get_entry_point(self):
-        return self.angr.entry
-
     def read_memory(self, addr, size):
         return ''.join(self.angr.ld.memory[addr + i] for i in xrange(size))

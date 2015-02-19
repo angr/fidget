@@ -72,7 +72,7 @@ class Fidget(object):
         successes = 0
         for funcaddr in funcs:
             # But don't touch _start. Seriously.
-            if funcaddr == self._binrepr.get_entry_point():
+            if funcaddr == self._binrepr.angr.entry:
                 l.debug('Skipping entry point')
                 continue
 

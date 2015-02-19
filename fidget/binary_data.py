@@ -19,6 +19,8 @@ l = logging.getLogger('fidget.binary_data')
 
 class BinaryData():
     def __init__(self, mark, path, cleanval, dirtyval, binrepr, symrepr):
+        if type(cleanval) not in (int, long):
+            raise Exception('cleanval must be an int or long!')
         self.mark = mark
         self.path = path
         self.value = cleanval
@@ -474,6 +476,8 @@ class BinaryData():
 
 class BinaryDataConglomerate:
     def __init__(self, cleanval, dirtyval, flags):
+        if type(cleanval) not in (int, long):
+            raise ValueError("cleanval must be an int or long!")
         self.value = cleanval
         self.symval = dirtyval
         self.dependencies = []
