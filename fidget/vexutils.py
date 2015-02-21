@@ -24,6 +24,11 @@ def equals(a, b):
         return equals(a.addr, b.addr) and equals(a.data, b.data)
     elif a.tag == 'Ist_Put':
         return a.offset == b.offset and equals(a.data, b.data)
+    elif a.tag == 'Ist_PutI':
+        return str(a) == str(b)     # Nope.
+    elif a.tag == 'Ist_Exit':
+        return a.jk == b.jk and a.is_flat == b.is_flat and \
+            equals(a.dst, b.dst) and equals(a.guard, b.guard)
     elif a.tag == 'Iex_Get':
         return a.offset == b.offset
     elif a.tag == 'Iex_RdTmp':
@@ -42,41 +47,19 @@ def equals(a, b):
         return True     # Nope.
     elif a.tag == 'Iex_ITE':
         return equals(a.iftrue, b.iftrue) and equals(a.iffalse, b.iffalse) and equals(a.cond, b.cond)
+    elif a.tag == 'Iex_GetI':
+        return str(a) == str(b) # fuck it
+    elif a.tag.startswith('Ico'):
+        return a.size == b.size and a.value == b.value
     else:
         raise FidgetUnsupportedError("Unknown tag (comparison): {}".format(a.tag))
 
 def is_tmp_used(block, tmp):
     for stmt in block.statements:
-        if stmt.tag in ('Ist_NoOp', 'Ist_IMark'):
-            continue
-        elif stmt.tag in ('Ist_Put', 'Ist_WrTmp'):
-            if is_tmp_in_expression(stmt.data, tmp):
+        for expr in stmt.expressions:
+            if expr.tag == 'Iex_RdTmp' and expr.tmp == tmp:
                 return True
-        elif stmt.tag == 'Ist_Store':
-            if is_tmp_in_expression(stmt.data, tmp) or \
-               is_tmp_in_expression(stmt.addr, tmp):
-                return True
-        else:
-            raise FidgetUnsupportedError("Unknown statement tag (is_used): {}".format(stmt.tag))
     return False
-
-def is_tmp_in_expression(expr, tmp):
-    if expr.tag == 'Iex_RdTmp':
-        return tmp == expr.tmp
-    elif expr.tag in ('Iex_Get', 'Iex_Const', 'Iex_CCall'):
-        return False
-    elif expr.tag == 'Iex_Load':
-        return is_tmp_in_expression(expr.addr, tmp)
-    elif expr.tag in ('Iex_Unop', 'Iex_Binop', 'Iex_Triop'):
-        for arg in expr.args:
-            if is_tmp_in_expression(arg, tmp): return True
-        return False
-    elif expr.tag == 'Iex_ITE':
-        return is_tmp_in_expression(expr.iftrue, tmp) or \
-               is_tmp_in_expression(expr.iffalse, tmp) or \
-               is_tmp_in_expression(expr.cond, tmp)
-    else:
-        raise FidgetUnsupportedError("Unknown expression tag (is_used): {}".format(expr.tag))
 
 # {get,set}_from_path
 # pass it any python objects and a list of keys

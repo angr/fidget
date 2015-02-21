@@ -23,6 +23,7 @@ class Executable(object):
             import ipdb; ipdb.set_trace()
 
         self.angr = Project(filename)
+        self.angr.arch.cache_irsb = False
         self.native_word = self.angr.arch.bits
         self.cfg = self.angr.analyses.CFG()
         self.funcman = self.cfg.function_manager

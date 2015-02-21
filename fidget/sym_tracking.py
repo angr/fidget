@@ -75,8 +75,10 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
                     blockstate.access(value_expr, 4)
 
                 SmartExpression(blockstate, stmt.guard, mark, [pathindex, 'guard'])
-
-
+            elif stmt.tag == 'Ist_PutI':    # haha no
+                SmartExpression(blockstate, stmt.data, mark, [pathindex, 'data'])
+            elif stmt.tag == 'Ist_Dirty':   # hahAHAHAH NO
+                pass
             else:
                 raise FidgetUnsupportedError("Unknown vex instruction???", stmt)
 
@@ -266,8 +268,12 @@ class SmartExpression:
                 elif vexpression.op.startswith('Iop_Sub'):
                     self.stack_addr = self.deps[0].stack_addr and not self.deps[1].stack_addr
             except SimOperationError:
-                pass
+                l.exception("SimOperationError while running op '%s', returning null", vexpression.op)
+            except KeyError:
+                l.error("Unsupported operation '%s', returning null", vexpression.op)
         elif vexpression.tag == 'Iex_CCall':
+            pass
+        elif vexpression.tag == 'Iex_GetI':
             pass
         else:
             raise FidgetUnsupportedError('Unknown expression tag ({:#x}): {!r}'.format(mark.addr, vexpression.tag))
