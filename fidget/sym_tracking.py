@@ -41,14 +41,8 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
                 pass
 
             elif stmt.tag == 'Ist_Exit':
-                if stmt.jumpkind == 'Ijk_Boring':
-                    dest = SmartExpression(blockstate, stmt.dst, mark, [pathindex, 'dst'])
-                    try:
-                        queue.append(blockstate.copy(dest.cleanval.model.value))
-                    except AngrMemoryError:
-                        pass
-                else:
-                    l.warning('(%s) Not sure what to do with jumpkind %s', hex(mark.addr), stmt.jumpkind)
+                SmartExpression(blockstate, stmt.dst, mark, [pathindex, 'dst'])
+                # Let the cfg take care of control flow!
 
             elif stmt.tag in ('Ist_WrTmp', 'Ist_Store', 'Ist_Put'):
                 this_expression = SmartExpression(blockstate, stmt.data, mark, [pathindex, 'data'])
@@ -73,8 +67,8 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
                     blockstate.stack_cache[addr_expr.cleanval] = value_expr
                 if value_expr.stack_addr:
                     blockstate.access(value_expr, 4)
-
                 SmartExpression(blockstate, stmt.guard, mark, [pathindex, 'guard'])
+
             elif stmt.tag == 'Ist_PutI':    # haha no
                 SmartExpression(blockstate, stmt.data, mark, [pathindex, 'data'])
             elif stmt.tag == 'Ist_Dirty':   # hahAHAHAH NO
@@ -82,18 +76,8 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
             else:
                 raise FidgetUnsupportedError("Unknown vex instruction???", stmt)
 
-        # The last argument is wrong but I dont't think it matters
-        if block.jumpkind == 'Ijk_Boring':
-            dest = SmartExpression(blockstate, block.next, mark, [pathindex, 'next'])
-            if dest.cleanval not in binrepr.angr.sim_procedures:
-                try:
-                    queue.append(blockstate.copy(dest.cleanval.model.value))
-                except AngrMemoryError:
-                    pass
-        elif block.jumpkind in ('Ijk_Ret', 'Ijk_NoDecode'):
-            pass
-        elif block.jumpkind == 'Ijk_Call':
-            if binrepr.call_pushes_ret():
+        if block.jumpkind in ('Ijk_Call', 'Ijk_Boring'):
+            if block.jumpkind == 'Ijk_Call' and binrepr.angr.arch.call_pushes_ret:
                 # Pop the return address off the stack and keep going
                 stack = blockstate.get_reg(binrepr.angr.arch.sp_offset, binrepr.angr.arch.bytes)
                 popped = stack.deps[0] if stack.deps[0].stack_addr else stack.deps[1]
@@ -101,13 +85,19 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
                 # Discard the last two tags -- they'll be an alloc and an access for the call (the push and the retaddr)
                 blockstate.tags = blockstate.tags[:-2]
 
-            for simirsb, jumpkind in binrepr.cfg.get_successors_and_jumpkind(binrepr.cfg.get_any_irsb(blockstate.addr), False):
-                if jumpkind != 'Ijk_FakeRet':
-                    continue
-                try:
-                    queue.append(blockstate.copy(simirsb.addr))
-                except AngrMemoryError:
-                    pass
+            for context in binrepr.cfg.get_all_nodes(blockstate.addr):
+                for node, jumpkind in binrepr.cfg.get_successors_and_jumpkind( \
+                                        context, \
+                                        excluding_fakeret=False):
+                    if jumpkind == 'Ijk_Call':
+                        continue
+                    try:
+                        queue.append(blockstate.copy(node.addr))
+                    except AngrMemoryError:
+                        pass
+
+        elif block.jumpkind in ('Ijk_Ret', 'Ijk_NoDecode'):
+            pass
         else:
             raise FidgetError("({:#x}) Can't proceed from unknown jumpkind {!r}".format(mark.addr, block.jumpkind))
 
