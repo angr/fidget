@@ -63,10 +63,11 @@ class Fidget(object):
         # Find the real _start on MIPS so we don't touch it
         do_not_touch = None
         if self._binrepr.angr.arch.name == 'MIPS32':
-            bad_state = self._binrepr.cfg.get_any_irsb(self._binrepr.angr.entry).default_exit
-            if bad_state.log.jumpkind == 'Ijk_Call':
-                do_not_touch = bad_state.se.any_int(bad_state.ip)
-                l.debug('Found MIPS entry point stub target %s', hex(do_not_touch))
+            for context in self._binrepr.cfg.get_all_nodes(self._binrepr.angr.entry):
+                for succ, jumpkind in self._binrepr.cfg.get_successors_and_jumpkind(context):
+                    if jumpkind == 'Ijk_Call':
+                        do_not_touch = succ.addr
+                        l.debug('Found MIPS entry point stub target %s', hex(do_not_touch))
 
         last_size = 0
         successes = 0
@@ -126,7 +127,7 @@ class Fidget(object):
                 variables.stack_size = -alloc_op.value
 
             elif tag == 'STACK_DEALLOC':
-                if type(bindata.symval) in (int, long):
+                if not bindata.symval.symbolic:
                     continue
                 dealloc_ops.append(bindata)
 
