@@ -151,6 +151,7 @@ class Fidget(object):
     # Find the lowest sp-access that isn't an argument to the next function
     # By starting at accesses to [esp] and stepping up a word at a time
         if self._binrepr.angr.arch.name == 'X86':
+            last_addr = stack.conc_size
             for var in stack:
                 if var.conc_addr != last_addr:
                     break
@@ -207,7 +208,7 @@ class Fidget(object):
         for var in stack:
             fixedval = symrepr.any(var.sym_addr)
             fixedval = self._binrepr.resign_int(fixedval.value, fixedval.size())
-            l.debug('Moved %s (size %d) to %s', hex(var.conc_addr), var.size, hex(fixedval))
+            l.debug('Moved %s (size %s) to %s', hex(var.conc_addr), var.size, hex(fixedval))
 
         self._stack_patch_data += alloc_op.get_patch_data(symrepr)
         for dealloc in dealloc_ops:

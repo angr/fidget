@@ -43,7 +43,7 @@ class Variable(object):
 
     def add_access(self, access):
         self.accesses.append(access)
-        access.offset_variable = access.conc_addr - self.conc_addr
+        access.offset = access.conc_addr - self.conc_addr
         if access.access_flags == 1 and self.access_flags == 0:
             self.access_flags = 9
         else:
@@ -128,7 +128,7 @@ class Stack():
         var_list = list(self)
         for var, next_var in zip(var_list, var_list[1:] + [None]):
             var.sym_link(self.symrepr, self)
-            self.unsafe_constraints.extend(self.unsafe_constraints)
+            self.unsafe_constraints.extend(var.unsafe_constraints)
             if var.conc_addr % (self.binrepr.angr.arch.bytes) == 0:
                 self.symrepr.add(var.sym_addr % (self.binrepr.angr.arch.bytes) == 0)
 
