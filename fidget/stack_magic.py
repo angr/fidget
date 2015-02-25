@@ -5,50 +5,45 @@ from . import vexutils
 import logging
 l = logging.getLogger('fidget.stack_magic')
 
-class Access():
-    def __init__(self, bindata, varlist, special=False):
+class Access(object):
+    def __init__(self, bindata):
         self.bindata = bindata
-        self.value = bindata.value
-        self.varlist = varlist
-        self.binrepr = varlist.binrepr
-        self.symrepr = varlist.symrepr
+        self.offset = 0
+        self.special = False
 
-        self.access_flags = bindata.access_flags   # get access flags
-        Variable(varlist, self, special)           # make a variable or add it to an existing one
-        self.variable = varlist[self.address()]    # get reference to variable
-        self.offset_variable = 0
+    @property
+    def access_flags(self):
+        return self.bindata.access_flags
 
-    def address(self):
-        return self.value
+    @property
+    def conc_addr(self):
+        return self.bindata.value
 
-    def sym_link(self):
-        self.value = vexutils.SExtTo(64, self.bindata.symval)
-        self.bindata.apply_constraints(self.symrepr)
-        self.symrepr.add(self.address() - self.offset_variable == self.variable.address)
+    @property
+    def sym_addr(self):
+        return self.bindata.symval
 
-    def get_patches(self):
-        return self.bindata.get_patch_data(self.symrepr)
+    def get_patches(self, symrepr):
+        return self.bindata.get_patch_data(symrepr)
 
-class Variable():
-    def __init__(self, varlist, access, special=False):
-        if access.address() in varlist:
-            varlist[access.address()].add_access(access)
-            return
-        self.varlist = varlist
-        self.binrepr = varlist.binrepr
-        self.symrepr = varlist.symrepr
-        self.address = access.address()
+    def sym_link(self, variable, symrepr):
+        self.bindata.apply_constraints(symrepr)
+        symrepr.add(self.sym_addr - self.offset == variable.sym_addr)
+
+class Variable(object):
+    def __init__(self, address, sym_addr):
+        self.conc_addr = address
+        self.sym_addr = sym_addr
+
         self.accesses = []
         self.access_flags = 0
-        self.add_access(access)
-        varlist.add_variable(self)
-        self.special = self.address >= 0 or special
-        self.next = None
+        self.special = self.conc_addr >= 0
         self.size = None
+        self.unsafe_constraints = []
 
     def add_access(self, access):
         self.accesses.append(access)
-        access.offset_variable = access.address() - self.address
+        access.offset_variable = access.conc_addr - self.conc_addr
         if access.access_flags == 1 and self.access_flags == 0:
             self.access_flags = 9
         else:
@@ -56,79 +51,99 @@ class Variable():
 
     def merge(self, child):
         for access in child.accesses:
-            access.offset_variable = access.address() - self.address
-            self.accesses.append(access)
-            access.variable = self
+            self.add_access(access)
 
-    def sym_link(self):
-        org_addr = self.address
-        name_prefix = 'var' if org_addr < 0 else 'arg'
-        self.address = self.symrepr._claripy.BitVec('%s_%x' % (name_prefix, abs(org_addr)), 64)
-        for access in self.accesses: access.sym_link()
+    def sym_link(self, symrepr, stack):
+        for access in self.accesses:
+            access.sym_link(self, symrepr)
+
         if self.special:
-            if org_addr >= 0:
-                self.symrepr.add(self.address == org_addr)
-            else:
-                self.symrepr.add(self.address == (org_addr - self.varlist.old_size) + self.varlist.stack_size)
-            if self.next is not None:
-                self.next.sym_link()
+            if self.conc_addr >= 0:   # fix in place relative to the base pointer
+                symrepr.add(self.sym_addr == self.conc_addr)
+            else:               # fix in place relative to the stack pointer
+                symrepr.add(self.sym_addr == (self.conc_addr - stack.conc_size) + stack.sym_size)
             return
-        if not self.varlist.done_first:
-            self.varlist.done_first = True
-            self.symrepr.add(self.address >= (org_addr + self.varlist.old_size) - self.varlist.stack_size)
-        if org_addr % (self.binrepr.native_word / 8) == 0:
-            self.symrepr.add(self.address % (self.binrepr.native_word/8) == 0)
-        self.varlist.unsafe_constraints.append(self.address < org_addr)
-        if self.next is None or self.next.special:
-            self.symrepr.add(self.address <= org_addr)
-        if self.next is not None:
-            self.next.sym_link()
-        if self.next is not None and not self.next.special:
-            if self.binrepr.safe:
-                self.symrepr.add(self.address + self.size == self.next.address)
-            else:
-                self.symrepr.add(self.address + self.size <= self.next.address)
 
-    def get_patches(self):
-        return sum((access.get_patches() for access in self.accesses), [])
+        self.unsafe_constraints.append(self.sym_addr < self.conc_addr)
 
-class VarList():
+    def get_patches(self, symrepr):
+        return sum((access.get_patches(symrepr) for access in self.accesses), [])
+
+class Stack():
     def __init__(self, binrepr, symrepr, stack_size):
         self.variables = {} # all the variables, indexed by address
         self.addr_list = [] # all the addresses, kept sorted
         self.binrepr = binrepr
         self.symrepr = symrepr
-        self.stack_size = stack_size
-        self.old_size = stack_size
-        self.unsafe_constraints = []
-        self.done_first = False
+        self.conc_size = stack_size
+        self.sym_size = symrepr._claripy.BV("stack_size", binrepr.angr.arch.bits)
+        self.unsafe_constraints = [self.sym_size > self.conc_size]
 
-    def __getitem__(self, key):
-        return self.variables[key]
+    def __iter__(self):
+        for addr in self.addr_list:
+            yield self.variables[addr]
 
-    def __delitem__(self, key):
-        del self.variables[key]
-        self.addr_list.remove(key)
+    def access(self, bindata):
+        access = Access(bindata)
+        if access.conc_addr < - self.conc_size:
+            access.special = True
 
-    def __contains__(self, val):
-        return val in self.variables
-
-    def __len__(self):
-        return len([0 for x in self.variables if not self.variables[x].special])
+        if access.conc_addr not in self.variables:
+            name_prefix = 'var' if access.conc_addr < 0 else 'arg'
+            sym_addr = self.symrepr._claripy.BV('%s_%x' % (name_prefix, abs(access.conc_addr)), self.binrepr.angr.arch.bits)
+            self.add_variable(Variable(access.conc_addr, sym_addr))
+        self.variables[access.conc_addr].add_access(access)
 
     def add_variable(self, var):
-        self.variables[var.address] = var
-        bisect.insort(self.addr_list, var.address)
+        self.variables[var.conc_addr] = var
+        bisect.insort(self.addr_list, var.conc_addr)
 
-    def num_accesses(self):
-        return sum(map(lambda x: len(x.accesses), self.get_all_vars()))
+    @property
+    def all_accs(self):
+        return sum(map(lambda x: x.accesses, self.all_vars), [])
 
-    def get_all_vars(self):
+    @property
+    def all_vars(self):
         return map(lambda x: self.variables[x], self.addr_list)
 
+    @property
+    def num_accs(self):
+        return len(self.all_accs)
+
+    @property
+    def num_vars(self):
+        return len(self.variables)
+
+    @property
+    def patches(self):
+        return sum((var.get_patches(self.symrepr) for var in self), [])
+
     def sym_link(self):
+        self.symrepr.add(self.sym_size >= self.conc_size)
+        self.symrepr.add(self.sym_size <= self.conc_size + (16 * self.num_vars + 32))
+        self.symrepr.add(self.sym_size % (self.binrepr.angr.arch.bytes) == 0)
+
         first = self.variables[self.addr_list[0]]
-        first.sym_link()        # yaaay recursion and list linkage!
+        self.symrepr.add(first.sym_addr >= (first.conc_addr + self.conc_size) - self.sym_size)
+        var_list = list(self)
+        for var, next_var in zip(var_list, var_list[1:] + [None]):
+            var.sym_link(self.symrepr, self)
+            self.unsafe_constraints.extend(self.unsafe_constraints)
+            if var.conc_addr % (self.binrepr.angr.arch.bytes) == 0:
+                self.symrepr.add(var.sym_addr % (self.binrepr.angr.arch.bytes) == 0)
+
+            if var.special:
+                # We're one of the args that needs to stay fixed relative somewhere
+                pass
+            elif next_var is None or next_var.special:
+                # If we're the last free-floating variable, set a solid bottom
+                self.symrepr.add(var.sym_addr <= var.conc_addr)
+            else:
+                # Otherwise we're one of the free-floating variables
+                if self.binrepr.safe:
+                    self.symrepr.add(var.sym_addr + var.size == next_var.sym_addr)
+                else:
+                    self.symrepr.add(var.sym_addr + var.size <= next_var.sym_addr)
 
     def collapse(self):
         i = 0               # old fashioned loop because we're removing items
@@ -137,7 +152,7 @@ class VarList():
             var = self.variables[self.addr_list[i]]
             if var.special:
                 continue
-            if var.address % (self.binrepr.native_word / 8) != 0:
+            if var.conc_addr % (self.binrepr.angr.arch.bytes) != 0:
                 self.merge_up(i)
                 i -= 1
             elif var.access_flags & 8:
@@ -153,24 +168,20 @@ class VarList():
         child = self.variables.pop(self.addr_list.pop(i))
         parent = self.variables[self.addr_list[i-1]]
         parent.merge(child)
-        l.debug('Merged %s into %s', hex(child.address), hex(parent.address))
+        l.debug('Merged %s into %s', hex(child.conc_addr), hex(parent.conc_addr))
 
     def merge_down(self, i):
         child = self.variables.pop(self.addr_list.pop(i))
         parent = self.variables[self.addr_list[i]]
         parent.merge(child)
-        l.debug('Merged %s down to %s', hex(child.address), hex(parent.address))
-
-    def get_patches(self):
-        return sum((var.get_patches() for var in self.get_all_vars()), [])
+        l.debug('Merged %s down to %s', hex(child.conc_addr), hex(parent.conc_addr))
 
     def mark_sizes(self):
         for i, addr in enumerate(self.addr_list[:-1]):
             var = self.variables[addr]
-            var.next = self.variables[self.addr_list[i+1]]
-            var.size = var.next.address - var.address
+            next_var = self.variables[self.addr_list[i+1]]
+            var.size = next_var.conc_addr - var.conc_addr
         var = self.variables[self.addr_list[-1]]
-        var.next = None
-        var.size = self.stack_size - var.address
+        var.size = None
 
 

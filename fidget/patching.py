@@ -1,7 +1,7 @@
 import os
 import claripy
 
-from .stack_magic import Access, VarList
+from .stack_magic import Stack
 from .executable import Executable
 from .sym_tracking import find_stack_tags
 from .errors import FidgetError, FidgetUnsupportedError
@@ -114,7 +114,7 @@ class Fidget(object):
         symrepr = clrp.solver()
         alloc_op = None   # the instruction that performs a stack allocation
         dealloc_ops = []  # the instructions that perform a stack deallocation
-        variables = VarList(self._binrepr, symrepr, 0)
+        stack = Stack(self._binrepr, symrepr, 0)
         for tag, bindata in find_stack_tags(self._binrepr, symrepr, funcaddr):
             if tag == '': continue
             l.debug('Got a tag at 0x%0.8x: %s: %s', bindata.memaddr, tag, hex(bindata.value))
@@ -124,7 +124,7 @@ class Fidget(object):
                     alloc_op = bindata
                 elif bindata.value < alloc_op.value:
                     alloc_op = bindata
-                variables.stack_size = -alloc_op.value
+                stack.conc_size = -alloc_op.value
 
             elif tag == 'STACK_DEALLOC':
                 if not bindata.symval.symbolic:
@@ -132,8 +132,7 @@ class Fidget(object):
                 dealloc_ops.append(bindata)
 
             elif tag == 'STACK_ACCESS':
-                # This constructor adds itself to the variable tracker
-                Access(bindata, variables, bindata.value < -variables.stack_size)
+                stack.access(bindata)
 
             elif tag == 'STACK_ALLOCA':
                 l.warning('\tFunction appears to use alloca, abandoning')
@@ -151,47 +150,35 @@ class Fidget(object):
 
     # Find the lowest sp-access that isn't an argument to the next function
     # By starting at accesses to [esp] and stepping up a word at a time
-        if self._binrepr.is_convention_stack_args():
-            wordsize = self._binrepr.native_word
-            i = variables.stack_size
-            while True:
-                if i in variables:
-                    variables[i].special = True
-                    i += wordsize
-                else:
+        if self._binrepr.angr.arch.name == 'X86':
+            for var in stack:
+                if var.conc_addr != last_addr:
                     break
+                next_addr += self._binrepr.angr.arch.bytes
+                var.special = True
 
-        num_vars = len(variables)
-        if num_vars > 0:
-            num_accs = variables.num_accesses()
-            l.info('\tFunction has a stack frame of %s bytes', hex(variables.stack_size))
-            l.info('\t%d access%s to %d address%s %s made.',
-                num_accs, '' if num_accs == 1 else 'es',
-                num_vars, '' if num_vars == 1 else 'es',
-                'is' if num_accs == 1 else 'are')
-
-            l.debug('Stack addresses: [%s]', ', '.join(hex(n) for n in variables.addr_list))
-        else:
-            l.info("\tFunction has 0x%x-byte stack frame, but doesn't use it for local vars", variables.stack_size)
+        if stack.num_vars == 0:
+            l.info("\tFunction has 0x%x-byte stack frame, but doesn't use it for local vars", stack.conc_size)
             return
 
-        variables.collapse()
-        variables.mark_sizes()
+        l.info('\tFunction has a stack frame of %s bytes', hex(stack.conc_size))
+        l.info('\t%d access%s to %d address%s %s made.',
+            stack.num_accs, '' if stack.num_accs == 1 else 'es',
+            stack.num_vars, '' if stack.num_vars == 1 else 'es',
+            'is' if stack.num_accs == 1 else 'are')
 
-        sym_stack_size = clrp.BitVec("stack_size", 64)
-        symrepr.add(sym_stack_size >= variables.stack_size)
-        symrepr.add(sym_stack_size <= variables.stack_size + (16 * len(variables) + 32))
-        symrepr.add(sym_stack_size % (self._binrepr.native_word/8) == 0)
+        l.debug('Stack addresses: [%s]', ', '.join(hex(var.conc_addr) for var in stack))
+
+        stack.collapse()
+        stack.mark_sizes()
 
         alloc_op.apply_constraints(symrepr)
-        symrepr.add(vexutils.SExtTo(64, alloc_op.symval) == -sym_stack_size)
+        symrepr.add(alloc_op.symval == -stack.sym_size)
         for op in dealloc_ops:
             op.apply_constraints(symrepr)
             symrepr.add(op.symval == 0)
 
-        variables.old_size = variables.stack_size
-        variables.stack_size = sym_stack_size
-        variables.sym_link()
+        stack.sym_link()
 
         # OKAY HERE WE GO
         #print '\nConstraints:'
@@ -203,28 +190,27 @@ class Fidget(object):
             raise FidgetError("You're a terrible programmer")
 
         # FIXME: THIS is the bottleneck in patching right now. Can we do better?
-        for constraint in variables.unsafe_constraints:
+        for constraint in stack.unsafe_constraints:
             if symrepr.satisfiable(extra_constraints=[constraint]):
                 symrepr.add(constraint)
                 l.debug('Added unsafe constraint:      %s', constraint)
             else:
                 l.debug("DIDN'T add unsafe constraint: %s", constraint)
 
-        new_stack = symrepr.any(variables.stack_size).value
-        if new_stack == variables.old_size:
+        new_stack = symrepr.any(stack.sym_size).value
+        if new_stack == stack.conc_size:
             l.warning('\tUnable to resize stack')
             return
 
-        l.info('\tResized stack from 0x%x to 0x%x', variables.old_size, new_stack)
+        l.info('\tResized stack from 0x%x to 0x%x', stack.conc_size, new_stack)
 
-        for addr in variables.addr_list:
-            fixedval = symrepr.any(variables.variables[addr].address)
+        for var in stack:
+            fixedval = symrepr.any(var.sym_addr)
             fixedval = self._binrepr.resign_int(fixedval.value, fixedval.size())
-            l.debug('Moved %s (size %d) to %s', hex(addr), variables.variables[addr].size, hex(fixedval))
+            l.debug('Moved %s (size %d) to %s', hex(var.conc_addr), var.size, hex(fixedval))
 
         self._stack_patch_data += alloc_op.get_patch_data(symrepr)
         for dealloc in dealloc_ops:
-            dealloc.gotime = True
             self._stack_patch_data += dealloc.get_patch_data(symrepr)
-        self._stack_patch_data += variables.get_patches()
+        self._stack_patch_data += stack.patches
 
