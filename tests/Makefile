@@ -44,7 +44,7 @@ test_division: test_division.c
 	#$(CC_AARCH64) -o test_division_aarch64 $<
 
 ctf:
-	wget http://shell-storm.org/repo/CTF/GITS-2013/Pwnable/Shiftd-100/shiftd-3a9c2a55e77d1467ee46dfb931170c737d24f310 -O ctf_amd64
+	wget http://shell-storm.org/repo/CTF/GITS-2013/Pwnable/Shiftd-100/shiftd-3a9c2a55e77d1467ee46dfb931170c737d24f310 -O ctf_amd64 --local-encoding=utf8
 	wget http://shell-storm.org/repo/CTF/CodeGate-2014-Juinor-Quals/nuclear/nuclear -O ctf_x86
 	#wget http://andrewdutcher.com/helium/trafman -O ctf_armhf
 	wget http://andrewdutcher.com/helium/deepblue -O ctf_ppc
