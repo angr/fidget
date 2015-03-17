@@ -5,7 +5,6 @@ from .stack_magic import Stack
 from .executable import Executable
 from .sym_tracking import find_stack_tags
 from .errors import FidgetError, FidgetUnsupportedError
-from . import vexutils
 
 import logging
 l = logging.getLogger('fidget.patching')
@@ -155,7 +154,7 @@ class Fidget(object):
             for var in stack:
                 if var.conc_addr != last_addr:
                     break
-                next_addr += self._binrepr.angr.arch.bytes
+                last_addr += self._binrepr.angr.arch.bytes
                 var.special = True
 
         if stack.num_vars == 0:

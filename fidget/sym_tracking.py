@@ -356,7 +356,7 @@ class SmartExpression:
         return 'Expression at 0x%x stmt %d' % (self.mark.addr, self.path[0])
 
 class CustomExpression(SmartExpression):
-    def __init__(self):
+    def __init__(self): # pylint: disable=super-init-not-called
         pass
 
 class ConstExpression(object):

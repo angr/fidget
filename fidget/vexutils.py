@@ -73,10 +73,10 @@ def get_from_path(obj, path):
 def _get_from_path(obj, path):
     if len(path) == 0: return obj
     key = path.pop(0)
-    if type(key) == int or type(obj) == dict:
+    if isinstance(key, (int, dict)):
         try:
             item = obj[key]
-        except:
+        except KeyError:
             return None
         return _get_from_path(item, path)
     if not hasattr(obj, key): return None
@@ -87,7 +87,7 @@ def set_from_path(obj, path, value):
 
 def _set_from_path(obj, path, value):
     key = path.pop(0)
-    if type(key) == int or type(obj) == dict:
+    if isinstance(key, (int, dict)):
         if path == []:
             obj[key] = value
         else:
@@ -129,11 +129,11 @@ def get_stmt_num(block, n):
         i += 1
 
 def ZExtTo(size, vec):
-    if type(vec) in (int, long): return vec
+    if isinstance(vec, (int, long)): return vec
     return ExtTo(size, vec, vec.zero_extend)
 
 def SExtTo(size, vec):
-    if type(vec) in (int, long): return vec
+    if isinstance(vec, (int, long)): return vec
     return ExtTo(size, vec, vec.sign_extend)
 
 def ExtTo(size, vec, func):

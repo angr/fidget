@@ -1,7 +1,5 @@
 import bisect
 
-from . import vexutils
-
 import logging
 l = logging.getLogger('fidget.stack_magic')
 
