@@ -32,7 +32,7 @@ class BinaryData():
         self.memaddr = mark.addr
         self.physaddr = binrepr.relocate_to_physaddr(self.memaddr)
 
-        self.armthumb = self.binrepr.angr.is_thumb_addr(self.memaddr)
+        self.armthumb = self.binrepr.cfg.is_thumb_addr(self.memaddr)
         self.insbytes = self.binrepr.read_memory(self.memaddr, self.inslen)
         self.insvex = self.binrepr.make_irsb(self.insbytes, self.armthumb)
 
