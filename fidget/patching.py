@@ -189,13 +189,20 @@ class Fidget(object):
             l.critical('(%s) Safe constraints unsatisfiable, fix this NOW', hex(funcaddr))
             raise FidgetError("You're a terrible programmer")
 
-        # FIXME: THIS is the bottleneck in patching right now. Can we do better?
-        for constraint in stack.unsafe_constraints:
-            if symrepr.satisfiable(extra_constraints=[constraint]):
+        while True:
+            trued = []
+            falsed = []
+            for constraint in stack.unsafe_constraints:
+                if symrepr.eval(constraint, 1)[0]:
+                    trued.append(constraint)
+                else:
+                    falsed.append(constraint)
+            for constraint in trued:
                 symrepr.add(constraint)
-                l.debug('Added unsafe constraint:      %s', constraint)
-            else:
-                l.debug("DIDN'T add unsafe constraint: %s", constraint)
+            assert symrepr.satisfiable()
+            stack.unsafe_constraints = falsed
+            if not symrepr.eval(symrepr._claripy.Or(*falsed), 1)[0]:
+                break
 
         new_stack = symrepr.any(stack.sym_size).value
         if new_stack == stack.conc_size:
