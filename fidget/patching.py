@@ -201,7 +201,7 @@ class Fidget(object):
                 symrepr.add(constraint)
             assert symrepr.satisfiable()
             stack.unsafe_constraints = falsed
-            if not symrepr.eval(symrepr._claripy.Or(*falsed), 1)[0]:
+            if len(falsed) == 0 or not symrepr.eval(symrepr._claripy.Or(*falsed), 1)[0]:
                 break
 
         new_stack = symrepr.any(stack.sym_size).value
