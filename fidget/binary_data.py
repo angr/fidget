@@ -241,7 +241,7 @@ class BinaryData():
         m = self.path[:]
         try:
             basic = vexutils.get_from_path(self.insvex.statements, m)
-        except (IndexError, AttributeError, KeyError):
+        except (IndexError, AttributeError, KeyError) as _:
             raise FuzzingAssertionFailure("Can't follow given path!")
         m[-1] = 'type'
         size = vexutils.get_from_path(self.insvex.statements, m)
@@ -251,32 +251,19 @@ class BinaryData():
         # Get challengers
         tog = self.get_range()
 
-        # Round 1
-        newblock = self.binrepr.make_irsb(self.get_patched_instruction(tog[0]), self.armthumb)
-        for stmt_idx, (oldstmt, newstmt) in enumerate(zip(self.insvex.statements, newblock.statements)):
-            if self.path[0] == stmt_idx:
-                if not vexutils.equals_except(oldstmt, newstmt, self.path[1:], self.binrepr.unsign_int(tog[0], size)):
+        for challenger in (tog[0], tog[1]-1):
+            newblock = self.binrepr.make_irsb(self.get_patched_instruction(challenger), self.armthumb)
+            okay = (basic, self.binrepr.unsign_int(challenger, size))
+            try:
+                if vexutils.get_from_path(newblock.statements, self.path) != okay[1]:
                     return False
-            # Vex will sometimes read from registers then never use them
-            # This messes stuff up, so don't check equality for temp-writes
-            # that are never used.
-            elif oldstmt.tag == 'Ist_WrTmp' and newstmt.tag == 'Ist_WrTmp' and not vexutils.is_tmp_used(self.insvex, oldstmt.tmp):
-                pass
-            elif not vexutils.equals(oldstmt, newstmt):
+            except (IndexError, AttributeError, KeyError) as _:
                 return False
-
-        # Round 2
-        newblock = self.binrepr.make_irsb(self.get_patched_instruction(tog[1]-1), self.armthumb)
-        for stmt_idx, (oldstmt, newstmt) in enumerate(zip(self.insvex.statements, newblock.statements)):
-            if self.path[0] == stmt_idx:
-                if not vexutils.equals_except(oldstmt, newstmt, self.path[1:], self.binrepr.unsign_int(tog[1]-1, size)):
-                    return False
-            # Vex will sometimes read from registers then never use them
-            # This messes stuff up, so don't check equality for temp-writes
-            # that are never used.
-            elif oldstmt.tag == 'Ist_WrTmp' and newstmt.tag == 'Ist_WrTmp' and not vexutils.is_tmp_used(self.insvex, oldstmt.tmp):
-                pass
-            elif not vexutils.equals(oldstmt, newstmt):
+            for a, b in vexutils.equals(self.insvex, newblock):
+                if a == b:
+                    continue
+                if (a, b) == okay:
+                    continue
                 return False
 
         # Success!

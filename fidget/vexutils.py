@@ -1,5 +1,6 @@
 import os
 
+import pyvex, angr
 from .errors import FidgetUnsupportedError
 import logging
 l = logging.getLogger('fidget.vexutils')
@@ -9,50 +10,65 @@ l = logging.getLogger('fidget.vexutils')
 
 # equals
 # Compares two vex structs.
-# it should be able to handle any two Statement or Expression structs.
-# Disregards differences in temp numbers and IMark addresses.
+# Returns an iterator that yields sets of tuples of primitive values
+# If all the tuples it yields have the same values, then they are equal
 
-def equals(a, b):
-    if a.tag != b.tag: return False
-    if a.tag == 'Ist_NoOp':
-        return True
-    elif a.tag == 'Ist_IMark':
-        return a.len == b.len
-    elif a.tag == 'Ist_WrTmp':
-        return equals(a.data, b.data)
-    elif a.tag == 'Ist_Store':
-        return equals(a.addr, b.addr) and equals(a.data, b.data)
-    elif a.tag == 'Ist_Put':
-        return a.offset == b.offset and equals(a.data, b.data)
-    elif a.tag == 'Ist_PutI':
-        return str(a) == str(b)     # Nope.
-    elif a.tag == 'Ist_Exit':
-        return a.jk == b.jk and a.is_flat == b.is_flat and \
-            equals(a.dst, b.dst) and equals(a.guard, b.guard)
-    elif a.tag == 'Iex_Get':
-        return a.offset == b.offset
-    elif a.tag == 'Iex_RdTmp':
-        return True
-    elif a.tag == 'Iex_Const':
-        return a.con.value == b.con.value
-    elif a.tag == 'Iex_Load':
-        return equals(a.addr, b.addr)
-    elif a.tag == 'Iex_Unop':
-        return a.op == b.op and equals(a.args[0], b.args[0])
-    elif a.tag == 'Iex_Binop':
-        return a.op == b.op and equals(a.args[0], b.args[0]) and equals(a.args[1], b.args[1])
-    elif a.tag == 'Iex_Triop':
-        return a.op == b.op and equals(a.args[0], b.args[0]) and equals(a.args[1], b.args[1]) and equals(a.args[2], b.args[2])
-    elif a.tag == 'Iex_CCall':
-        return True     # Nope.
-    elif a.tag == 'Iex_ITE':
-        return equals(a.iftrue, b.iftrue) and equals(a.iffalse, b.iffalse) and equals(a.cond, b.cond)
-    elif a.tag == 'Iex_GetI':
-        return str(a) == str(b) # fuck it
-    elif a.tag.startswith('Ico'):
-        return a.size == b.size and a.value == b.value
+def equals(item1, item2):
+    if isinstance(item1, pyvex.IRSB) or isinstance(item1, angr.vexer.SerializableIRSB):
+        if not (isinstance(item2, pyvex.IRSB) or isinstance(item2, angr.vexer.SerializableIRSB)):
+            yield (True, False)
+            return
+        queue = zip(item1.statements, item2.statements)
     else:
-        raise FidgetUnsupportedError("Unknown tag (comparison): {}".format(a.tag))
+        queue = [(item1, item2)]
+
+    while len(queue) > 0:
+        a, b = queue.pop()
+        yield (a.tag, b.tag)
+        if a.tag == 'Ist_NoOp':
+            pass
+        elif a.tag == 'Ist_IMark':
+            yield (a.len, b.len)
+            yield (a.addr, b.addr)
+        elif a.tag == 'Ist_WrTmp':
+            queue.append((a.data, b.data))
+        elif a.tag == 'Ist_Store':
+            queue.append((a.addr, b.addr))
+            queue.append((a.data, b.data))
+        elif a.tag == 'Ist_Put':
+            yield (a.offset, b.offset)
+            queue.append((a.data, b.data))
+        elif a.tag == 'Ist_PutI':
+            yield (str(a), str(b))      # Nope.
+        elif a.tag == 'Ist_Exit':
+            yield (a.jk, b.jk)
+            yield (a.is_flat, b.is_flat)
+            queue.append((a.dst, b.dst))
+            queue.append((a.guard, b.guard))
+        elif a.tag == 'Iex_Get':
+            yield (a.offset, b.offset)
+        elif a.tag == 'Iex_RdTmp':
+            yield (a.tmp, b.tmp)
+        elif a.tag == 'Iex_Const':
+            yield (a.con.value, b.con.value)
+        elif a.tag == 'Iex_Load':
+            queue.append((a.addr, b.addr))
+        elif a.tag in ('Iex_Unop', 'Iex_Binop', 'Iex_Triop', 'Iex_Quop'):
+            yield (a.op, b.op)
+            queue += zip(a.args, b.args)
+        elif a.tag == 'Iex_CCall':
+            pass     # Nope.
+        elif a.tag == 'Iex_ITE':
+            queue.append((a.iftrue, b.iftrue))
+            queue.append((a.iffalse, b.iffalse))
+            queue.append((a.cond, b.cond))
+        elif a.tag == 'Iex_GetI':
+            yield (str(a), str(b))  # fuck it
+        elif a.tag.startswith('Ico'):
+            yield (a.size, b.size)
+            yield (a.value, b.value)
+        else:
+            raise FidgetUnsupportedError("Unknown tag (comparison): {}".format(a.tag))
 
 def is_tmp_used(block, tmp):
     for stmt in block.statements:
