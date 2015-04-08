@@ -191,20 +191,10 @@ class Fidget(object):
             l.critical('(%s) Safe constraints unsatisfiable, fix this NOW', hex(funcaddr))
             raise FidgetError("You're a terrible programmer")
 
-        while True:
-            trued = []
-            falsed = []
-            for constraint in stack.unsafe_constraints:
-                if symrepr.eval(constraint, 1)[0]:
-                    trued.append(constraint)
-                else:
-                    falsed.append(constraint)
-            for constraint in trued:
+        # z3 is smart enough that this doesn't add any noticable overhead
+        for constraint in stack.unsafe_constraints:
+            if symrepr.satisfiable(extra_constraints=[constraint]):
                 symrepr.add(constraint)
-            assert symrepr.satisfiable()
-            stack.unsafe_constraints = falsed
-            if len(falsed) == 0 or not symrepr.eval(symrepr._claripy.Or(*falsed), 1)[0]:
-                break
 
         new_stack = symrepr.any(stack.sym_size).value
         if new_stack == stack.conc_size:

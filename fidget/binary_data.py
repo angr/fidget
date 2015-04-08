@@ -252,6 +252,8 @@ class BinaryData():
         tog = self.get_range()
 
         for challenger in (tog[0], tog[1]-1):
+            if challenger == 0:
+                challenger = 4  # zero will cause problems. 4 should be in range?
             newblock = self.binrepr.make_irsb(self.get_patched_instruction(challenger), self.armthumb)
             okay = (basic, self.binrepr.unsign_int(challenger, size))
             try:

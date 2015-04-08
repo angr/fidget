@@ -48,7 +48,7 @@ def equals(item1, item2):
         elif a.tag == 'Iex_Get':
             yield (a.offset, b.offset)
         elif a.tag == 'Iex_RdTmp':
-            yield (a.tmp, b.tmp)
+            pass
         elif a.tag == 'Iex_Const':
             yield (a.con.value, b.con.value)
         elif a.tag == 'Iex_Load':
