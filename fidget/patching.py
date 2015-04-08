@@ -70,6 +70,7 @@ class Fidget(object):
 
         last_size = 0
         successes = 0
+        totals = 0
         for funcaddr in funcs:
             # But don't touch _start. Seriously.
             if funcaddr == self._binrepr.angr.entry:
@@ -101,10 +102,11 @@ class Fidget(object):
             if len(self._stack_patch_data) > last_size:
                 last_size = len(self._stack_patch_data)
                 successes += 1
+            totals += 1
         if successes == 0:
             l.error('Could not patch any functions\' stacks!')
         else:
-            l.info('Patched %d functions', successes)
+            l.info('Patched %d/%d functions', successes, totals)
 
 
     def patch_function_stack(self, funcaddr):
