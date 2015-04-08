@@ -52,6 +52,7 @@ class BinaryData():
         try:
             self.search_value()         # This one is the biggie
         except ValueNotFoundError:
+            l.debug("Value not found: 0x%x at 0x%x", self.value, self.memaddr)
             self.constraints = [dirtyval == cleanval]
             self.constant = True
             return
@@ -238,11 +239,12 @@ class BinaryData():
     def sanity_check(self):
         # Prerequisite
         m = self.path[:]
-        basic = vexutils.get_from_path(vexutils.get_stmt_num(self.insvex, m[0]), m[1:])
-        if basic is None:
+        try:
+            basic = vexutils.get_from_path(self.insvex.statements, m)
+        except (IndexError, AttributeError, KeyError):
             raise FuzzingAssertionFailure("Can't follow given path!")
         m[-1] = 'type'
-        size = vexutils.get_from_path(vexutils.get_stmt_num(self.insvex, m[0]), m[1:])
+        size = vexutils.get_from_path(self.insvex.statements, m)
         size = vexutils.extract_int(size)
         if self.binrepr.resign_int(basic, size) != self.value:
             raise FuzzingAssertionFailure("Can't extract known value from path!")
@@ -251,9 +253,8 @@ class BinaryData():
 
         # Round 1
         newblock = self.binrepr.make_irsb(self.get_patched_instruction(tog[0]), self.armthumb)
-        i = None
-        for oldstmt, newstmt in zip(self.insvex.statements, newblock.statements):
-            if i == self.path[0]:
+        for stmt_idx, (oldstmt, newstmt) in enumerate(zip(self.insvex.statements, newblock.statements)):
+            if self.path[0] == stmt_idx:
                 if not vexutils.equals_except(oldstmt, newstmt, self.path[1:], self.binrepr.unsign_int(tog[0], size)):
                     return False
             # Vex will sometimes read from registers then never use them
@@ -264,16 +265,10 @@ class BinaryData():
             elif not vexutils.equals(oldstmt, newstmt):
                 return False
 
-            if oldstmt.tag == 'Ist_IMark':
-                i = 0
-            elif i is not None:
-                i += 1
-
         # Round 2
         newblock = self.binrepr.make_irsb(self.get_patched_instruction(tog[1]-1), self.armthumb)
-        i = None
-        for oldstmt, newstmt in zip(self.insvex.statements, newblock.statements):
-            if i == self.path[0]:
+        for stmt_idx, (oldstmt, newstmt) in enumerate(zip(self.insvex.statements, newblock.statements)):
+            if self.path[0] == stmt_idx:
                 if not vexutils.equals_except(oldstmt, newstmt, self.path[1:], self.binrepr.unsign_int(tog[1]-1, size)):
                     return False
             # Vex will sometimes read from registers then never use them
@@ -283,11 +278,6 @@ class BinaryData():
                 pass
             elif not vexutils.equals(oldstmt, newstmt):
                 return False
-
-            if oldstmt.tag == 'Ist_IMark':
-                i = 0
-            elif i is not None:
-                i += 1
 
         # Success!
         return True

@@ -74,12 +74,7 @@ def _get_from_path(obj, path):
     if len(path) == 0: return obj
     key = path.pop(0)
     if isinstance(key, (int, dict)):
-        try:
-            item = obj[key]
-        except KeyError:
-            return None
-        return _get_from_path(item, path)
-    if not hasattr(obj, key): return None
+        return _get_from_path(obj[key], path)
     return _get_from_path(getattr(obj, key), path)
 
 def set_from_path(obj, path, value):
