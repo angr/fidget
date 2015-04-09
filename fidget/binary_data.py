@@ -444,9 +444,6 @@ class BinaryData():
                 tophalf -= 1
             return (-half, tophalf)
 
-    def __reversed__(self):
-        return reversed(xrange(*self.get_range()))
-
     def __str__(self):
         return '%d at 0x%0.8x' % (self.value, self.memaddr)
 
@@ -469,5 +466,5 @@ class BinaryDataConglomerate:
         for x in self.dependencies:
             x.apply_constraints(symrepr)
 
-    def __repr__(self):
+    def __str__(self):
         return 'BinaryData(%x)' % self.value

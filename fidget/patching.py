@@ -104,7 +104,7 @@ class Fidget(object):
                 successes += 1
             totals += 1
         if successes == 0:
-            l.error('Could not patch any functions\' stacks!')
+            l.error("Could not patch any functions' stacks!")
         else:
             l.info('Patched %d/%d functions', successes, totals)
 
@@ -156,7 +156,7 @@ class Fidget(object):
             for var in stack:
                 if var.conc_addr != last_addr:
                     break
-                last_addr += self._binrepr.angr.arch.bytes
+                last_addr += self._binrepr.angr.arch.bytes  # TODO: Figure out why this branch is never explored?
                 var.special = True
 
         if stack.num_vars == 0:

@@ -169,12 +169,6 @@ class Stack():
         parent.merge(child)
         l.debug('Merged %s into %s', hex(child.conc_addr), hex(parent.conc_addr))
 
-    def merge_down(self, i):
-        child = self.variables.pop(self.addr_list.pop(i))
-        parent = self.variables[self.addr_list[i]]
-        parent.merge(child)
-        l.debug('Merged %s down to %s', hex(child.conc_addr), hex(parent.conc_addr))
-
     def mark_sizes(self):
         for i, addr in enumerate(self.addr_list[:-1]):
             var = self.variables[addr]

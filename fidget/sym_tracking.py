@@ -134,10 +134,7 @@ class TempStore(object):
         value.dirtyval = vexutils.ZExtTo(size, value.dirtyval)
         self.storage[tmp] = value
 
-class AccessType:       # enum, basically :P
-    def __init__(self):
-        pass
-
+class AccessType:       # pylint: disable=no-init
     READ = 1
     WRITE = 2
     POINTER = 4
@@ -155,12 +152,6 @@ class BlockState:
         stackexp = ConstExpression(symrepr._claripy.BitVecVal(0, binrepr.angr.arch.bits))
         stackexp.stack_addr = True
         self.regs[self.binrepr.angr.arch.sp_offset] = stackexp
-
-    def __str__(self):
-        return 'BlockState(binrepr, 0x%x)' % self.addr
-
-    def __repr__(self):
-        return str(self)
 
     def copy(self, newaddr):
         out = BlockState(self.binrepr, self.symrepr, newaddr)
@@ -194,15 +185,7 @@ class BlockState:
         if addr.cleanval in self.binrepr.angr.ld.memory:
             strval = ''.join(self.binrepr.angr.ld.memory[addr.cleanval + i] for i in xrange(size))
             return ConstExpression(self.symrepr._claripy.BitVecVal(self.binrepr.unpack_format(strval, size), size*8))
-        #physaddr = self.binrepr.relocate_to_physaddr(addr.cleanval)
-        #if physaddr is None:
-        #    return ConstExpression()
-        #self.binrepr.filestream.seek(physaddr)
-        #return ConstExpression(self.binrepr.unpack_format(self.binrepr.filestream.read(size), size))
         return ConstExpression(self.symrepr._claripy.BitVecVal(0, size*8))
-
-    def set_ip(self, addr):
-        self.regs[self.binrepr.angr.arch.ip_offset] = ConstExpression(self.symrepr._claripy.BitVecVal(addr, self.binrepr.angr.arch.bits))
 
     def access(self, addr_expression, access_type):
         if not addr_expression.stack_addr:
@@ -313,9 +296,6 @@ class SmartExpression:
             if i in exception_list: continue
             if expr.rootval:
                 expr_list[i] = ConstExpression(expr.cleanval)
-
-    def null(self, size):
-        return self.symrepr._claripy.BitVec(0, size)
 
     def make_bindata(self, flags=None):
         if self.bincache[0] is not None and flags is None:

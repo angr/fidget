@@ -28,7 +28,7 @@ class Executable(object):
         self.cfg = self.angr.analyses.CFG() # pylint: disable=no-member
         self.funcman = self.cfg.function_manager
         if self.angr.arch.name not in processors:
-            raise FidgetUnsupportedError("Unsupported archetecture " + self.angr.arch.name)
+            raise FidgetUnsupportedError("Unsupported architecture " + self.angr.arch.name)
         self.processor = processors.index(self.angr.arch.name)
 
     def locate_physaddr(self, address):
@@ -36,9 +36,6 @@ class Executable(object):
 
     def relocate_to_physaddr(self, address):
         return self.angr.main_binary.addr_to_offset(address)
-
-    def relocate_to_memaddr(self, address):
-        return self.angr.main_binary.offset_to_addr(address)
 
     def make_irsb(self, byte_string, thumb=False):
         offset = 0
@@ -64,9 +61,6 @@ class Executable(object):
             n += 1 << word_size
         return int(n)
 
-    def is_convention_stack_args(self):
-        return self.processor == 0
-
     def pack_format(self, val, size):
         fmt = ('<' if self.is_little_endian() else '>') + {1: 'B', 2: 'H', 4: 'I', 8: 'Q'}[size]
         return struct.pack(fmt, val)
@@ -75,14 +69,8 @@ class Executable(object):
         fmt = ('<' if self.is_little_endian() else '>') + {1: 'B', 2: 'H', 4: 'I', 8: 'Q'}[size]
         return struct.unpack(fmt, val)[0]
 
-    def is_64_bit(self):
-        return self.angr.arch.bits == 64
-
     def is_little_endian(self):
         return self.angr.arch.memory_endness == 'Iend_LE'
-
-    def call_pushes_ret(self):
-        return self.processor in (0, 1)
 
     def read_memory(self, addr, size):
         return ''.join(self.angr.ld.memory[addr + i] for i in xrange(size))
