@@ -3,3 +3,9 @@ class FidgetError(Exception):
 
 class FidgetUnsupportedError(FidgetError):
     pass
+
+class ValueNotFoundError(FidgetError):
+    pass
+
+class FuzzingAssertionFailure(FidgetError):
+    pass

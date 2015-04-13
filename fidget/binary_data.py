@@ -2,7 +2,10 @@ import struct
 import claripy
 
 from . import vexutils
-from .errors import FidgetError, FidgetUnsupportedError
+from .errors import FidgetError, \
+                    FidgetUnsupportedError, \
+                    ValueNotFoundError, \
+                    FuzzingAssertionFailure
 
 import logging
 l = logging.getLogger('fidget.binary_data')
@@ -48,7 +51,8 @@ class BinaryData():
         self.symval8 = None
         try:
             self.search_value()         # This one is the biggie
-        except BinaryData.ValueNotFoundError:
+        except ValueNotFoundError:
+            l.debug("Value not found: 0x%x at 0x%x", self.value, self.memaddr)
             self.constraints = [dirtyval == cleanval]
             self.constant = True
             return
@@ -70,12 +74,6 @@ class BinaryData():
         for constraint in self.constraints:
             symrepr.add(constraint)
 
-    class ValueNotFoundError(FidgetError):
-        pass
-
-    class FuzzingAssertionFailure(FidgetError):
-        pass
-
     def search_value(self):
         if self.binrepr.processor == 2:
             self.bit_length = 32
@@ -91,7 +89,7 @@ class BinaryData():
                 thoughtval = self.armins & 0xFFF
                 thoughtval *= 1 if self.armins & 0x00800000 else -1
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundError
+                    raise ValueNotFoundError
             elif not self.armthumb and self.armins & 0x0E000000 == 0x02000000:
                 # Data processing w/ immediate
                 self.armop = 2
@@ -100,7 +98,7 @@ class BinaryData():
                 thoughtval = (thoughtval >> shiftval) | (thoughtval << (32 - shiftval))
                 thoughtval &= 0xFFFFFFFF
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundError
+                    raise ValueNotFoundError
                 self.bit_shift = self.symrepr._claripy.BitVec(hex(self.memaddr)[2:] + '_shift', 4)
                 #self.symval = self.binrepr.claripy.BitVec(hex(self.memaddr)[2:] + '_imm', 32)
                 self.symval8 = self.symrepr._claripy.BitVec(hex(self.memaddr)[2:] + '_imm8', 8)
@@ -111,7 +109,7 @@ class BinaryData():
                 thoughtval = (self.armins & 0xF) | ((self.armins & 0xF00) >> 4)
                 thoughtval *= 1 if self.armins & 0x00800000 else -1
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundError
+                    raise ValueNotFoundError
             elif not self.armthumb and self.armins & 0x0E000000 == 0x0C000000:
                 # Coprocessor data transfer
                 # i.e. FLD/FST
@@ -119,7 +117,7 @@ class BinaryData():
                 thoughtval = self.armins & 0xFF
                 thoughtval *= 4 if self.armins & 0x00800000 else -4
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundError
+                    raise ValueNotFoundError
                 self.modconstraint = 4
             elif self.armthumb and self.armins & 0xF000 in (0x9000, 0xA000):
                 # SP-relative LDR/STR, also SP-addiition
@@ -127,7 +125,7 @@ class BinaryData():
                 thoughtval = self.armins & 0xFF
                 thoughtval *= 4
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundError
+                    raise ValueNotFoundError
                 self.modconstraint = 4
             elif self.armthumb and self.armins & 0xFF00 == 0xB000:
                 # Add/sub offset to SP
@@ -137,7 +135,7 @@ class BinaryData():
                 thoughtval = self.armins & 0x7F
                 thoughtval *= 4
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundError
+                    raise ValueNotFoundError
                 self.modconstraint = 4
             elif self.armthumb and self.armins & 0x0000FFE0 == 0x0000E840:
                 # Thumb32 - LDREX/STREX ...
@@ -145,7 +143,7 @@ class BinaryData():
                 thoughtval = (self.armins & 0x00FF0000) >> 16
                 thoughtval *= 4
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundError
+                    raise ValueNotFoundError
                 self.modconstraint = 4
             elif self.armthumb and self.armins & 0x0000FE40 == 0x0000E840:
                 # Thumb32 - LDRD/STRD
@@ -153,7 +151,7 @@ class BinaryData():
                 thoughtval = (self.armins & 0x00FF0000) >> 16
                 thoughtval *= 4 if self.armins & 0x00000080 else -4
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundError
+                    raise ValueNotFoundError
                 self.modconstraint = 4
             elif self.armthumb and self.armins & 0x0800FE80 == 0x0800F800 and self.armins & 0x05000000 != 0:
                 # Thumb32 - something something LDR/STR
@@ -164,7 +162,7 @@ class BinaryData():
                 if self.armins & 0x02000000 == 0:
                     thoughtval *= -1
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundError
+                    raise ValueNotFoundError
             elif self.armthumb and self.armins & 0x0000FE80 == 0x0000F880:
                 # Thumb32 - LDR/STR with 12-bit imm
                 self.armop = 10
@@ -172,7 +170,7 @@ class BinaryData():
                 if self.armins & 0x00000100:
                     thoughtval = self.binrepr.resign_int(thoughtval, 12)
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundError
+                    raise ValueNotFoundError
             elif self.armthumb and self.armins & 0x8000FA00 == 0x0000F000:
                 # Thumb32 - Data processing w/ modified 12 bit imm a.k.a EVIL
                 if self.armins & 0x70000400:
@@ -184,20 +182,20 @@ class BinaryData():
                     self.armop = 11
                     thoughtval = (self.armins & 0x00FF0000) >> 16
                     if thoughtval != self.value:
-                        raise BinaryData.ValueNotFoundError
+                        raise ValueNotFoundError
             elif self.armthumb and self.armins & 0xFC00 == 0x1C00:
                 # Thumb - ADD/SUB
                 self.armop = 13
                 thoughtval = (self.armins & 0x01C0) >> 6
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundError
+                    raise ValueNotFoundError
             elif self.armthumb and self.armins & 0x0000EE00 == 0x0000EC00:
                 # Thumb32 - Coprocessor stuff
                 self.armop = 14
                 thoughtval = (self.armins & 0x00FF0000) >> 16
                 thoughtval *= 4 if self.armins & 0x00000080 else -4
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundError
+                    raise ValueNotFoundError
                 self.modconstraint = 4
             elif self.armthumb and self.armins & 0x8000FB40 == 0x0000F200:
                 # Thumb32 - ADD/SUB plain 12 bit imm
@@ -206,11 +204,11 @@ class BinaryData():
                 thoughtval |= (self.armins & 0x70000000) >> 20
                 thoughtval |= (self.armins & 0x00000400) << 1
                 if thoughtval != self.value:
-                    raise BinaryData.ValueNotFoundError
+                    raise ValueNotFoundError
             else:
-                raise BinaryData.ValueNotFoundError
+                raise ValueNotFoundError
             if not self.sanity_check():
-                raise BinaryData.ValueNotFoundError
+                raise ValueNotFoundError
         else:
             self.armop = 0
             found = False
@@ -236,61 +234,39 @@ class BinaryData():
                 if found:
                     break
             if not found:
-                raise BinaryData.ValueNotFoundError
+                raise ValueNotFoundError
 
     def sanity_check(self):
         # Prerequisite
         m = self.path[:]
-        basic = vexutils.get_from_path(vexutils.get_stmt_num(self.insvex, m[0]), m[1:])
-        if basic is None:
-            raise BinaryData.FuzzingAssertionFailure("Can't follow given path!")
+        try:
+            basic = vexutils.get_from_path(self.insvex.statements, m)
+        except (IndexError, AttributeError, KeyError) as _:
+            raise FuzzingAssertionFailure("Can't follow given path!")
         m[-1] = 'type'
-        size = vexutils.get_from_path(vexutils.get_stmt_num(self.insvex, m[0]), m[1:])
+        size = vexutils.get_from_path(self.insvex.statements, m)
         size = vexutils.extract_int(size)
         if self.binrepr.resign_int(basic, size) != self.value:
-            raise BinaryData.FuzzingAssertionFailure("Can't extract known value from path!")
+            raise FuzzingAssertionFailure("Can't extract known value from path!")
         # Get challengers
         tog = self.get_range()
 
-        # Round 1
-        newblock = self.binrepr.make_irsb(self.get_patched_instruction(tog[0]), self.armthumb)
-        i = None
-        for oldstmt, newstmt in zip(self.insvex.statements, newblock.statements):
-            if i == self.path[0]:
-                if not vexutils.equals_except(oldstmt, newstmt, self.path[1:], self.binrepr.unsign_int(tog[0], size)):
+        for challenger in (tog[0], tog[1]-1):
+            if challenger == 0:
+                challenger = 4  # zero will cause problems. 4 should be in range?
+            newblock = self.binrepr.make_irsb(self.get_patched_instruction(challenger), self.armthumb)
+            okay = (basic, self.binrepr.unsign_int(challenger, size))
+            try:
+                if vexutils.get_from_path(newblock.statements, self.path) != okay[1]:
                     return False
-            # Vex will sometimes read from registers then never use them
-            # This messes stuff up, so don't check equality for temp-writes
-            # that are never used.
-            elif oldstmt.tag == 'Ist_WrTmp' and newstmt.tag == 'Ist_WrTmp' and not vexutils.is_tmp_used(self.insvex, oldstmt.tmp):
-                pass
-            elif not vexutils.equals(oldstmt, newstmt):
+            except (IndexError, AttributeError, KeyError) as _:
                 return False
-
-            if oldstmt.tag == 'Ist_IMark':
-                i = 0
-            elif i is not None:
-                i += 1
-
-        # Round 2
-        newblock = self.binrepr.make_irsb(self.get_patched_instruction(tog[1]-1), self.armthumb)
-        i = None
-        for oldstmt, newstmt in zip(self.insvex.statements, newblock.statements):
-            if i == self.path[0]:
-                if not vexutils.equals_except(oldstmt, newstmt, self.path[1:], self.binrepr.unsign_int(tog[1]-1, size)):
-                    return False
-            # Vex will sometimes read from registers then never use them
-            # This messes stuff up, so don't check equality for temp-writes
-            # that are never used.
-            elif oldstmt.tag == 'Ist_WrTmp' and newstmt.tag == 'Ist_WrTmp' and not vexutils.is_tmp_used(self.insvex, oldstmt.tmp):
-                pass
-            elif not vexutils.equals(oldstmt, newstmt):
+            for a, b in vexutils.equals(self.insvex, newblock):
+                if a == b:
+                    continue
+                if (a, b) == okay:
+                    continue
                 return False
-
-            if oldstmt.tag == 'Ist_IMark':
-                i = 0
-            elif i is not None:
-                i += 1
 
         # Success!
         return True
@@ -468,9 +444,6 @@ class BinaryData():
                 tophalf -= 1
             return (-half, tophalf)
 
-    def __reversed__(self):
-        return reversed(xrange(*self.get_range()))
-
     def __str__(self):
         return '%d at 0x%0.8x' % (self.value, self.memaddr)
 
@@ -493,5 +466,5 @@ class BinaryDataConglomerate:
         for x in self.dependencies:
             x.apply_constraints(symrepr)
 
-    def __repr__(self):
+    def __str__(self):
         return 'BinaryData(%x)' % self.value

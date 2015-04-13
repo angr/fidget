@@ -75,7 +75,7 @@ class Stack():
         self.symrepr = symrepr
         self.conc_size = stack_size
         self.sym_size = symrepr._claripy.BV("stack_size", binrepr.angr.arch.bits)
-        self.unsafe_constraints = [self.sym_size > self.conc_size]
+        self.unsafe_constraints = []
 
     def __iter__(self):
         for addr in self.addr_list:
@@ -120,6 +120,7 @@ class Stack():
         self.symrepr.add(self.sym_size >= self.conc_size)
         self.symrepr.add(self.sym_size <= self.conc_size + (16 * self.num_vars + 32))
         self.symrepr.add(self.sym_size % (self.binrepr.angr.arch.bytes) == 0)
+        self.unsafe_constraints.append(self.sym_size > self.conc_size)
 
         first = self.variables[self.addr_list[0]]
         self.symrepr.add(first.sym_addr >= (first.conc_addr + self.conc_size) - self.sym_size)
@@ -167,12 +168,6 @@ class Stack():
         parent = self.variables[self.addr_list[i-1]]
         parent.merge(child)
         l.debug('Merged %s into %s', hex(child.conc_addr), hex(parent.conc_addr))
-
-    def merge_down(self, i):
-        child = self.variables.pop(self.addr_list.pop(i))
-        parent = self.variables[self.addr_list[i]]
-        parent.merge(child)
-        l.debug('Merged %s down to %s', hex(child.conc_addr), hex(parent.conc_addr))
 
     def mark_sizes(self):
         for i, addr in enumerate(self.addr_list[:-1]):

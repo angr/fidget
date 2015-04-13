@@ -2,6 +2,7 @@
 # Basically stuff for tracking data flow through a basic block and generating tags for it
 
 from angr import AngrMemoryError
+import pyvex
 
 from .binary_data import BinaryData, BinaryDataConglomerate
 from .errors import FidgetError, FidgetUnsupportedError
@@ -13,68 +14,68 @@ l = logging.getLogger('fidget.sym_tracking')
 
 def find_stack_tags(binrepr, symrepr, funcaddr):
     queue = [BlockState(binrepr, symrepr, funcaddr)]
+    headcache = set()
     cache = set()
     while len(queue) > 0:
         blockstate = queue.pop(0)
-        if blockstate.addr in cache:
+        if blockstate.addr in headcache:
             continue
         l.debug("Analyzing block 0x%x", blockstate.addr)
-        mark = None
-        pathindex = 0
-        block = binrepr.angr.block(blockstate.addr)
-        for stmt in block.statements:
-            if stmt.tag == 'Ist_IMark':
-                mark = stmt
-                cache.add(mark.addr)
-                pathindex = -1
-                #sys.stdout.flush()
-                #stmt.pp()
-                #print
-                continue
+        try:
+            block = binrepr.angr.block(blockstate.addr)
+        except AngrMemoryError:
+            continue
+        imarks = [ s for s in block.statements if isinstance(s, pyvex.IRStmt.IMark) ]
+        headcache.add(imarks[0].addr)
+        # FIXME: This part might break for thumb
+        for mark in imarks:
+            cache.add(mark.addr)
+            insnblock = binrepr.angr.block(mark.addr, max_size=mark.len, num_inst=-1)
+            temps = TempStore(insnblock.tyenv)
+            blockstate.load_tempstore(temps)
+            stmtgen = enumerate(insnblock.statements)
+            for _, stmt in stmtgen:
+                if isinstance(stmt, pyvex.IRStmt.IMark): break
 
-            pathindex += 1
-            #import sys;
-            #sys.stdout.write('%.3d  ' % pathindex)
-            #stmt.pp()
-            #print
-            if stmt.tag in ('Ist_NoOp', 'Ist_AbiHint'):
-                pass
+            for stmt_idx, stmt in stmtgen:
+                if stmt.tag in ('Ist_NoOp', 'Ist_AbiHint'):
+                    pass
 
-            elif stmt.tag == 'Ist_Exit':
-                SmartExpression(blockstate, stmt.dst, mark, [pathindex, 'dst'])
-                # Let the cfg take care of control flow!
+                elif stmt.tag == 'Ist_Exit':
+                    SmartExpression(blockstate, stmt.dst, mark, [stmt_idx, 'dst'])
+                    # Let the cfg take care of control flow!
 
-            elif stmt.tag in ('Ist_WrTmp', 'Ist_Store', 'Ist_Put'):
-                this_expression = SmartExpression(blockstate, stmt.data, mark, [pathindex, 'data'])
-                blockstate.assign(stmt, this_expression, pathindex)
+                elif stmt.tag in ('Ist_WrTmp', 'Ist_Store', 'Ist_Put'):
+                    this_expression = SmartExpression(blockstate, stmt.data, mark, [stmt_idx, 'data'])
+                    blockstate.assign(stmt, this_expression, stmt_idx)
 
-            elif stmt.tag == 'Ist_LoadG':
-                # Conditional loads. Lots of bullshit.
-                this_expression = SmartExpression(blockstate, stmt.addr, mark, [pathindex, 'addr'])
-                blockstate.access(this_expression, 1)
-                tmp_size = vexutils.extract_int(block.tyenv.typeOf(stmt.dst))
-                this_expression.dirtyval = vexutils.ZExtTo(tmp_size, this_expression.dirtyval)
-                blockstate.temps[stmt.dst] = this_expression
-                SmartExpression(blockstate, stmt.guard, mark, [pathindex, 'guard'])
-                SmartExpression(blockstate, stmt.alt, mark, [pathindex, 'alt'])
+                elif stmt.tag == 'Ist_LoadG':
+                    # Conditional loads. Lots of bullshit.
+                    this_expression = SmartExpression(blockstate, stmt.addr, mark, [stmt_idx, 'addr'])
+                    blockstate.access(this_expression, 1)
+                    tmp_size = temps.size_of(stmt.dst)
+                    temps.write(stmt.dst, vexutils.ZExtTo(tmp_size, this_expression.dirtyval))
+                    blockstate.temps[stmt.dst] = this_expression
+                    SmartExpression(blockstate, stmt.guard, mark, [stmt_idx, 'guard'])
+                    SmartExpression(blockstate, stmt.alt, mark, [stmt_idx, 'alt'])
 
-            elif stmt.tag == 'Ist_StoreG':
-                # Conditional store
-                addr_expr = SmartExpression(blockstate, stmt.addr, mark, [pathindex, 'addr'])
-                value_expr = SmartExpression(blockstate, stmt.data, mark, [pathindex, 'data'])
-                blockstate.access(addr_expr, 2)
-                if addr_expr.stack_addr:
-                    blockstate.stack_cache[addr_expr.cleanval] = value_expr
-                if value_expr.stack_addr:
-                    blockstate.access(value_expr, 4)
-                SmartExpression(blockstate, stmt.guard, mark, [pathindex, 'guard'])
+                elif stmt.tag == 'Ist_StoreG':
+                    # Conditional store
+                    addr_expr = SmartExpression(blockstate, stmt.addr, mark, [stmt_idx, 'addr'])
+                    value_expr = SmartExpression(blockstate, stmt.data, mark, [stmt_idx, 'data'])
+                    blockstate.access(addr_expr, 2)
+                    if addr_expr.stack_addr:
+                        blockstate.stack_cache[addr_expr.cleanval] = value_expr
+                    if value_expr.stack_addr:
+                        blockstate.access(value_expr, 4)
+                    SmartExpression(blockstate, stmt.guard, mark, [stmt_idx, 'guard'])
 
-            elif stmt.tag == 'Ist_PutI':    # haha no
-                SmartExpression(blockstate, stmt.data, mark, [pathindex, 'data'])
-            elif stmt.tag == 'Ist_Dirty':   # hahAHAHAH NO
-                pass
-            else:
-                raise FidgetUnsupportedError("Unknown vex instruction???", stmt)
+                elif stmt.tag == 'Ist_PutI':    # haha no
+                    SmartExpression(blockstate, stmt.data, mark, [stmt_idx, 'data'])
+                elif stmt.tag == 'Ist_Dirty':   # hahAHAHAH NO
+                    pass
+                else:
+                    raise FidgetUnsupportedError("Unknown vex instruction???", stmt)
 
         if block.jumpkind in ('Ijk_Call', 'Ijk_Boring'):
             if block.jumpkind == 'Ijk_Call' and binrepr.angr.arch.call_pushes_ret:
@@ -89,27 +90,51 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
                 for node, jumpkind in binrepr.cfg.get_successors_and_jumpkind( \
                                         context, \
                                         excluding_fakeret=False):
-                    if jumpkind == 'Ijk_Call':
+                    if jumpkind not in ('Ijk_Boring', 'Ijk_FakeRet'):
                         continue
-                    try:
+                    elif node.addr in headcache:
+                        continue
+                    elif node.simprocedure_name is not None:
+                        continue
+                    elif node.addr in cache:
+                        for succ, jumpkind in binrepr.cfg.get_successors_and_jumpkind(node, excluding_fakeret=False):
+                            if jumpkind in ('Ijk_Boring', 'Ijk_FakeRet') and succ.addr not in cache and succ.simprocedure_name is None:
+                                queue.append(blockstate.copy(succ.addr))
+                    else:
                         queue.append(blockstate.copy(node.addr))
-                    except AngrMemoryError:
-                        pass
 
         elif block.jumpkind in ('Ijk_Ret', 'Ijk_NoDecode'):
             pass
         else:
-            raise FidgetError("({:#x}) Can't proceed from unknown jumpkind {!r}".format(mark.addr, block.jumpkind))
+            raise FidgetError("({:#x}) Can't proceed from unknown jumpkind {!r}".format(imarks[0].addr, block.jumpkind))
 
         blockstate.end()
         for tag in blockstate.tags:
             yield tag
 
+class TempStore(object):
+    def __init__(self, tyenv):
+        self.tyenv = tyenv
+        self.storage = {}
 
-class AccessType:       # enum, basically :P
-    def __init__(self):
-        pass
+    def read(self, tmp):
+        if tmp not in self.storage:
+            raise ValueError('Temp not assigned to yet')
+        else:
+            return self.storage[tmp]
 
+    def size_of(self, tmp):
+        if tmp >= len(self.tyenv.types):
+            raise ValueError('Temp not valid in curent env')
+        return vexutils.extract_int(self.tyenv.types[tmp])
+
+    def write(self, tmp, value):
+        size = self.size_of(tmp)
+        value.cleanval = vexutils.ZExtTo(size, value.cleanval)
+        value.dirtyval = vexutils.ZExtTo(size, value.dirtyval)
+        self.storage[tmp] = value
+
+class AccessType:       # pylint: disable=no-init
     READ = 1
     WRITE = 2
     POINTER = 4
@@ -120,20 +145,13 @@ class BlockState:
         self.binrepr = binrepr
         self.symrepr = symrepr
         self.addr = addr
-        self.irsb = binrepr.angr.block(addr)
         self.regs = {}
-        self.temps = {}
         self.stack_cache = {}
         self.tags = []
+        self.tempstore = None
         stackexp = ConstExpression(symrepr._claripy.BitVecVal(0, binrepr.angr.arch.bits))
         stackexp.stack_addr = True
         self.regs[self.binrepr.angr.arch.sp_offset] = stackexp
-
-    def __str__(self):
-        return 'BlockState(binrepr, 0x%x)' % self.addr
-
-    def __repr__(self):
-        return str(self)
 
     def copy(self, newaddr):
         out = BlockState(self.binrepr, self.symrepr, newaddr)
@@ -148,13 +166,16 @@ class BlockState:
             out.regs[b] = self.regs[b]
         return out
 
+    def load_tempstore(self, tempstore):
+        self.tempstore = tempstore
+
     def get_reg(self, regnum, size):
         if not regnum in self.regs:
             return ConstExpression(self.symrepr._claripy.BitVecVal(0, size*8))
         return self.regs[regnum].truncate(size*8)
 
     def get_tmp(self, tmpnum):
-        return self.temps[tmpnum]
+        return self.tempstore.read(tmpnum)
 
     def get_mem(self, addr, size):
         if addr.stack_addr:
@@ -164,26 +185,16 @@ class BlockState:
         if addr.cleanval in self.binrepr.angr.ld.memory:
             strval = ''.join(self.binrepr.angr.ld.memory[addr.cleanval + i] for i in xrange(size))
             return ConstExpression(self.symrepr._claripy.BitVecVal(self.binrepr.unpack_format(strval, size), size*8))
-        #physaddr = self.binrepr.relocate_to_physaddr(addr.cleanval)
-        #if physaddr is None:
-        #    return ConstExpression()
-        #self.binrepr.filestream.seek(physaddr)
-        #return ConstExpression(self.binrepr.unpack_format(self.binrepr.filestream.read(size), size))
         return ConstExpression(self.symrepr._claripy.BitVecVal(0, size*8))
-
-    def set_ip(self, addr):
-        self.regs[self.binrepr.angr.arch.ip_offset] = ConstExpression(self.symrepr._claripy.BitVecVal(addr, self.binrepr.angr.arch.bits))
 
     def access(self, addr_expression, access_type):
         if not addr_expression.stack_addr:
             return
         self.tags.append(('STACK_ACCESS', addr_expression.make_bindata(access_type)))
 
-    def assign(self, vextatement, expression, line):
+    def assign(self, vextatement, expression, stmt_idx):
         if vextatement.tag == 'Ist_WrTmp':
-            size = vexutils.extract_int(self.irsb.tyenv.types[vextatement.tmp])
-            expression.dirtyval = vexutils.ZExtTo(size, expression.dirtyval)
-            self.temps[vextatement.tmp] = expression
+            self.tempstore.write(vextatement.tmp, expression)
         elif vextatement.tag == 'Ist_Put':
             if not vextatement.offset in self.regs:
                 self.regs[vextatement.offset] = ConstExpression(self.symrepr._claripy.BitVecVal(0, self.binrepr.angr.arch.bits))
@@ -194,7 +205,7 @@ class BlockState:
                 else:
                     self.tags.append(('STACK_ALLOC', expression.make_bindata(0)))
         elif vextatement.tag == 'Ist_Store':
-            addr_expr = SmartExpression(self, vextatement.addr, expression.mark, [line, 'addr'])
+            addr_expr = SmartExpression(self, vextatement.addr, expression.mark, [stmt_idx, 'addr'])
             self.access(addr_expr, AccessType.WRITE)
             if addr_expr.stack_addr:
                 self.stack_cache[addr_expr.cleanval] = expression
@@ -285,9 +296,6 @@ class SmartExpression:
             if i in exception_list: continue
             if expr.rootval:
                 expr_list[i] = ConstExpression(expr.cleanval)
-
-    def null(self, size):
-        return self.symrepr._claripy.BitVec(0, size)
 
     def make_bindata(self, flags=None):
         if self.bincache[0] is not None and flags is None:

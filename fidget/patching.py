@@ -70,6 +70,7 @@ class Fidget(object):
 
         last_size = 0
         successes = 0
+        totals = 0
         for funcaddr in funcs:
             # But don't touch _start. Seriously.
             if funcaddr == self._binrepr.angr.entry:
@@ -101,10 +102,11 @@ class Fidget(object):
             if len(self._stack_patch_data) > last_size:
                 last_size = len(self._stack_patch_data)
                 successes += 1
+            totals += 1
         if successes == 0:
-            l.error('Could not patch any functions\' stacks!')
+            l.error("Could not patch any functions' stacks!")
         else:
-            l.info('Patched %d functions', successes)
+            l.info('Patched %d/%d functions', successes, totals)
 
 
     def patch_function_stack(self, funcaddr):
@@ -154,7 +156,7 @@ class Fidget(object):
             for var in stack:
                 if var.conc_addr != last_addr:
                     break
-                last_addr += self._binrepr.angr.arch.bytes
+                last_addr += self._binrepr.angr.arch.bytes  # TODO: Figure out why this branch is never explored?
                 var.special = True
 
         if stack.num_vars == 0:
@@ -189,13 +191,10 @@ class Fidget(object):
             l.critical('(%s) Safe constraints unsatisfiable, fix this NOW', hex(funcaddr))
             raise FidgetError("You're a terrible programmer")
 
-        # FIXME: THIS is the bottleneck in patching right now. Can we do better?
+        # z3 is smart enough that this doesn't add any noticable overhead
         for constraint in stack.unsafe_constraints:
             if symrepr.satisfiable(extra_constraints=[constraint]):
                 symrepr.add(constraint)
-                l.debug('Added unsafe constraint:      %s', constraint)
-            else:
-                l.debug("DIDN'T add unsafe constraint: %s", constraint)
 
         new_stack = symrepr.any(stack.sym_size).value
         if new_stack == stack.conc_size:
