@@ -6,6 +6,7 @@ from .errors import FidgetError, \
                     FidgetUnsupportedError, \
                     ValueNotFoundError, \
                     FuzzingAssertionFailure
+from pyvex import PyVEXError
 
 import logging
 l = logging.getLogger('fidget.binary_data')
@@ -52,11 +53,13 @@ class BinaryData():
         try:
             self.search_value()         # This one is the biggie
         except ValueNotFoundError:
+            del self.insvex
             l.debug("Value not found: 0x%x at 0x%x", self.value, self.memaddr)
             self.constraints = [dirtyval == cleanval]
             self.constant = True
             return
         self.constant = False
+        del self.insvex
 
         # allow search_value to set the constraints if it really wants to
         if len(self.constraints) == 0:
@@ -254,7 +257,10 @@ class BinaryData():
         for challenger in (tog[0], tog[1]-1):
             if challenger == 0:
                 challenger = 4  # zero will cause problems. 4 should be in range?
-            newblock = self.binrepr.make_irsb(self.get_patched_instruction(challenger), self.armthumb)
+            try:
+                newblock = self.binrepr.make_irsb(self.get_patched_instruction(challenger), self.armthumb)
+            except PyVEXError:
+                return False
             okay = (basic, self.binrepr.unsign_int(challenger, size))
             try:
                 if vexutils.get_from_path(newblock.statements, self.path) != okay[1]:

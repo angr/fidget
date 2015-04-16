@@ -7,7 +7,6 @@ class Access(object):
     def __init__(self, bindata):
         self.bindata = bindata
         self.offset = 0
-        self.special = False
 
     @property
     def access_flags(self):
@@ -35,9 +34,14 @@ class Variable(object):
 
         self.accesses = []
         self.access_flags = 0
-        self.special = self.conc_addr >= 0
+        self.special_bottom = self.conc_addr >= 0
+        self.special_top = False
         self.size = None
         self.unsafe_constraints = []
+
+    @property
+    def special(self):
+        return self.special_bottom or self.special_top
 
     def add_access(self, access):
         self.accesses.append(access)
@@ -55,11 +59,11 @@ class Variable(object):
         for access in self.accesses:
             access.sym_link(self, symrepr)
 
+        if self.special_bottom:
+            symrepr.add(self.sym_addr == self.conc_addr)
+        if self.special_top:
+            symrepr.add(self.sym_addr == (self.conc_addr - stack.conc_size) + stack.sym_size)
         if self.special:
-            if self.conc_addr >= 0:   # fix in place relative to the base pointer
-                symrepr.add(self.sym_addr == self.conc_addr)
-            else:               # fix in place relative to the stack pointer
-                symrepr.add(self.sym_addr == (self.conc_addr - stack.conc_size) + stack.sym_size)
             return
 
         self.unsafe_constraints.append(self.sym_addr < self.conc_addr)
@@ -81,10 +85,14 @@ class Stack():
         for addr in self.addr_list:
             yield self.variables[addr]
 
+    def __reversed__(self):
+        for addr in reversed(self.addr_list):
+            yield self.variables[addr]
+
     def access(self, bindata):
         access = Access(bindata)
-        if access.conc_addr < - self.conc_size:
-            access.special = True
+        #if access.conc_addr < -self.conc_size:
+        #    access.special_top = True
 
         if access.conc_addr not in self.variables:
             name_prefix = 'var' if access.conc_addr < 0 else 'arg'

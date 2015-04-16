@@ -149,12 +149,25 @@ class Fidget(object):
     # Find the lowest sp-access that isn't an argument to the next function
     # By starting at accesses to [esp] and stepping up a word at a time
         if self._binrepr.angr.arch.name == 'X86':
-            last_addr = stack.conc_size
+            last_addr = -stack.conc_size
             for var in stack:
                 if var.conc_addr != last_addr:
                     break
-                last_addr += self._binrepr.angr.arch.bytes  # TODO: Figure out why this branch is never explored?
-                var.special = True
+                last_addr += self._binrepr.angr.arch.bytes
+                #var.special_top = True
+                #l.debug("Marked TOP addr %d as special", var.conc_addr)
+
+        last_addr = None
+        for var in reversed(stack):
+            if last_addr is None:
+                if var.conc_addr < 0:
+                    break       # why would this happen
+                last_addr = var.conc_addr
+            if var.conc_addr != last_addr:
+                break
+            last_addr -= self._binrepr.angr.arch.bytes
+            var.special_bottom = True
+            l.debug("Marked BOTTOM addr %d as special", var.conc_addr)
 
         if stack.num_vars == 0:
             l.info("\tFunction has 0x%x-byte stack frame, but doesn't use it for local vars", stack.conc_size)
@@ -179,10 +192,12 @@ class Fidget(object):
 
         if largemode and not safe:
             symrepr.add(stack.sym_size <= stack.conc_size + (1024 * stack.num_vars + 2048))
-            stack.unsafe_constraints.append(stack.sym_size <= stack.conc_size + (1024 * stack.num_vars))
+            stack.unsafe_constraints.append(stack.sym_size >= stack.conc_size + (1024 * stack.num_vars))
+            stack.unsafe_constraints.append(stack.sym_size >= 0x70)
         elif largemode and safe:
             symrepr.add(stack.sym_size <= stack.conc_size + 1024*16)
-            stack.unsafe_constraints.append(stack.sym_size <= stack.conc_size + (1024 * stack.num_vars))
+            stack.unsafe_constraints.append(stack.sym_size >= stack.conc_size + 1024*8)
+            stack.unsafe_constraints.append(stack.sym_size >= 0x70)
         elif not largemode and safe:
             symrepr.add(stack.sym_size <= stack.conc_size + 256)
         elif not largemode and not safe:
@@ -202,7 +217,10 @@ class Fidget(object):
         # z3 is smart enough that this doesn't add any noticable overhead
         for constraint in stack.unsafe_constraints:
             if symrepr.satisfiable(extra_constraints=[constraint]):
+                l.debug("Added unsafe constraint:         %s", constraint)
                 symrepr.add(constraint)
+            else:
+                l.debug("Failed to add unsafe constraint: %s", constraint)
 
         new_stack = symrepr.any(stack.sym_size).value
         if new_stack == stack.conc_size:
