@@ -116,9 +116,8 @@ class Stack():
     def patches(self):
         return sum((var.get_patches(self.symrepr) for var in self), [])
 
-    def sym_link(self):
+    def sym_link(self, safe=False):
         self.symrepr.add(self.sym_size >= self.conc_size)
-        self.symrepr.add(self.sym_size <= self.conc_size + (16 * self.num_vars + 32))
         self.symrepr.add(self.sym_size % (self.binrepr.angr.arch.bytes) == 0)
         self.unsafe_constraints.append(self.sym_size > self.conc_size)
 
@@ -139,7 +138,7 @@ class Stack():
                 self.symrepr.add(var.sym_addr <= var.conc_addr)
             else:
                 # Otherwise we're one of the free-floating variables
-                if self.binrepr.safe:
+                if safe:
                     self.symrepr.add(var.sym_addr + var.size == next_var.sym_addr)
                 else:
                     self.symrepr.add(var.sym_addr + var.size <= next_var.sym_addr)

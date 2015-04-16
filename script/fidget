@@ -15,6 +15,8 @@ def addopt(options, option, argv):
         sys.exit(0)
     elif option in ('safe',):
         options['safe'] = True
+    elif option in ('huge',):
+        options['largemode'] = True
     elif option in ('o', 'output'):
         options['outfiles'].append(next(argv))
     elif option in ('w',):
@@ -53,6 +55,7 @@ Options:
     -w [function]           Whitelist a function name
     -b [function]           Blacklist a function name
     --safe                  Make conservative modifications
+    --huge                  Make stack frames gigantic
     --debug                 Pop an ipdb shell at the main function, break on exceptions
     --debugangr             Pop an ipdb shell right before calling into angr
     -l, --log [tag] [level] Change logging levels
@@ -196,7 +199,7 @@ def main():
     if len(sys.argv) < 2:
         usage(False)
     else:
-        options = {"logging": {"fidget": 20, "angr": 'WARNING', "simuvex": 'WARNING', "cle": 'WARNING', "claripy": 'ERROR'}, "logfile": None, "safe": False, "infiles": [], "outfiles": [], "whitelist": [], "blacklist": [], "debug": False, 'debugangr': False, "exit-on-error": False}
+        options = {"logging": {"fidget": 20, "angr": 'WARNING', "simuvex": 'WARNING', "cle": 'WARNING', "claripy": 'ERROR'}, "logfile": None, "safe": False, "largemode": False, "infiles": [], "outfiles": [], "whitelist": [], "blacklist": [], "debug": False, 'debugangr': False, "exit-on-error": False}
         argv = iter(sys.argv)
         next(argv)
         for arg in argv:
@@ -232,6 +235,7 @@ def main():
 
         exit_on_error = options.pop('exit-on-error')
         debug = options.pop('debug')
+        debugangr = options.pop('debugangr')
 
         outfiles = options.pop('outfiles')
         infiles = options.pop('infiles')
@@ -240,7 +244,7 @@ def main():
             try:
                 if debug:
                     ipdb.set_trace()
-                patch_file(infile, outfile, **options)
+                patch_file(infile, outfile, {'Fidget': {'debugangr': debugangr}, 'stacks': options})
             except (Exception, KeyboardInterrupt):              # pylint: disable=broad-except
                 traceback.print_exc()
                 if debug:

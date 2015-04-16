@@ -1,6 +1,6 @@
 from .patching import Fidget
 
-def patch_file(infile, outfile, **options):
-    fidgetress = Fidget(infile, **options)
-    fidgetress.patch()
+def patch_file(infile, outfile, options):
+    fidgetress = Fidget(infile, **options.pop('Fidget', {}))
+    fidgetress.patch(**options)
     fidgetress.apply_patches(outfile)

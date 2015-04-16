@@ -10,16 +10,11 @@ import logging
 l = logging.getLogger('fidget.patching')
 
 class Fidget(object):
-    def __init__(self, infile, safe=False, whitelist=None, blacklist=None, debugangr=False):
+    def __init__(self, infile, debugangr=False):
         self.infile = infile
-        self.safe = safe
-        self.whitelist = whitelist if whitelist is not None else []
-        self.blacklist = blacklist if blacklist is not None else []
         self.error = False
         self._stack_patch_data = []
-
         self._binrepr = Executable(infile, debugangr)
-        self._binrepr.safe = safe
 
     def apply_patches(self, outfile=None):
         patchdata = self.dump_patches()
@@ -49,10 +44,12 @@ class Fidget(object):
         # TODO: More kinds of patches please :P
         return self._stack_patch_data
 
-    def patch(self):
-        self.patch_stack() # :(
+    def patch(self, **options):
+        self.patch_stack(**options.pop('stacks', {})) # :(
 
-    def patch_stack(self):
+    def patch_stack(self, whitelist=None, blacklist=None, **kwargs):
+        whitelist = whitelist if whitelist is not None else []
+        blacklist = blacklist if blacklist is not None else []
         l.debug('Patching function stacks')
         self._stack_patch_data = []
 
@@ -92,13 +89,13 @@ class Fidget(object):
             # Check if the function is white/blacklisted
             # TODO: Do a real name lookup instead of a fake one
             funcname = 'sub_%x' % funcaddr
-            if (len(self.whitelist) > 0 and funcname not in self.whitelist) or \
-               (len(self.blacklist) > 0 and funcname in self.blacklist):
+            if (len(whitelist) > 0 and funcname not in whitelist) or \
+               (len(blacklist) > 0 and funcname in blacklist):
                 l.debug('Function %s removed by whitelist/blacklist', funcname)
                 continue
 
             l.info('Patching stack of %s', funcname)
-            self.patch_function_stack(funcaddr)
+            self.patch_function_stack(funcaddr, **kwargs)
             if len(self._stack_patch_data) > last_size:
                 last_size = len(self._stack_patch_data)
                 successes += 1
@@ -109,7 +106,7 @@ class Fidget(object):
             l.info('Patched %d/%d functions', successes, totals)
 
 
-    def patch_function_stack(self, funcaddr):
+    def patch_function_stack(self, funcaddr, safe=False, largemode=False):
         clrp = claripy.ClaripyStandalone('fidget_function_%x' % funcaddr)
         clrp.unique_names = False
         symrepr = clrp.solver()
@@ -180,7 +177,18 @@ class Fidget(object):
             op.apply_constraints(symrepr)
             symrepr.add(op.symval == 0)
 
-        stack.sym_link()
+        if largemode and not safe:
+            symrepr.add(stack.sym_size <= stack.conc_size + (1024 * stack.num_vars + 2048))
+            stack.unsafe_constraints.append(stack.sym_size <= stack.conc_size + (1024 * stack.num_vars))
+        elif largemode and safe:
+            symrepr.add(stack.sym_size <= stack.conc_size + 1024*16)
+            stack.unsafe_constraints.append(stack.sym_size <= stack.conc_size + (1024 * stack.num_vars))
+        elif not largemode and safe:
+            symrepr.add(stack.sym_size <= stack.conc_size + 256)
+        elif not largemode and not safe:
+            symrepr.add(stack.sym_size <= stack.conc_size + (16 * stack.num_vars + 32))
+
+        stack.sym_link(safe=safe)
 
         # OKAY HERE WE GO
         #print '\nConstraints:'
