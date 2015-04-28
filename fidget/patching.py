@@ -80,6 +80,9 @@ class Fidget(object):
                 l.debug('Skipping MIPS entry point stub target')
                 continue
 
+            if funcaddr in self._binrepr.angr.sim_procedures:
+                l.debug("Skipping simprocedure %s", self._binrepr.angr.sim_procedures[funcaddr][0].__name__)
+                continue
             # Only patch functions in the text section
             sec = self._binrepr.locate_physaddr(funcaddr)
             if sec is None:
