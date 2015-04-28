@@ -54,7 +54,7 @@ class Fidget(object):
         self._stack_patch_data = []
 
         # Loop through all the functions as found by angr's CFG
-        funcs = self._binrepr.funcman.functions.keys()
+        funcs = self._binrepr.funcman.functions
 
         # Find the real _start on MIPS so we don't touch it
         do_not_touch = None
@@ -68,7 +68,7 @@ class Fidget(object):
         last_size = 0
         successes = 0
         totals = 0
-        for funcaddr in funcs:
+        for funcaddr, func in funcs.iteritems():
             # But don't touch _start. Seriously.
             if funcaddr == self._binrepr.angr.entry:
                 l.debug('Skipping entry point')
@@ -82,19 +82,20 @@ class Fidget(object):
 
             # Only patch functions in the text section
             sec = self._binrepr.locate_physaddr(funcaddr)
-            if sec is None or sec != 'text':
-                l.debug('Skipping function 0x%x not in .text', funcaddr)
+            if sec is None:
+                l.debug('Skipping function %s not mapped', func.name)
+                continue
+            if funcaddr in self._binrepr.angr.main_binary.plt.values():
+                l.debug('Skipping function %s in PLT', func.name)
                 continue
 
             # Check if the function is white/blacklisted
-            # TODO: Do a real name lookup instead of a fake one
-            funcname = 'sub_%x' % funcaddr
-            if (len(whitelist) > 0 and funcname not in whitelist) or \
-               (len(blacklist) > 0 and funcname in blacklist):
-                l.debug('Function %s removed by whitelist/blacklist', funcname)
+            if (len(whitelist) > 0 and func.name not in whitelist) or \
+               (len(blacklist) > 0 and func.name in blacklist):
+                l.debug('Function %s removed by whitelist/blacklist', func.name)
                 continue
 
-            l.info('Patching stack of %s', funcname)
+            l.info('Patching stack of %s', func.name)
             self.patch_function_stack(funcaddr, **kwargs)
             if len(self._stack_patch_data) > last_size:
                 last_size = len(self._stack_patch_data)
