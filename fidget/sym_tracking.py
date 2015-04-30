@@ -182,8 +182,9 @@ class BlockState:
             if addr.cleanval in self.stack_cache:
                 return self.stack_cache[addr.cleanval]
             return ConstExpression(self.symrepr._claripy.BitVecVal(0, size*8))
-        if addr.cleanval in self.binrepr.angr.ld.memory:
-            strval = ''.join(self.binrepr.angr.ld.memory[addr.cleanval + i] for i in xrange(size))
+        cleanestval = addr.cleanval.model.value
+        if cleanestval in self.binrepr.angr.ld.memory:
+            strval = ''.join(self.binrepr.angr.ld.memory[cleanestval + i] for i in xrange(size))
             return ConstExpression(self.symrepr._claripy.BitVecVal(self.binrepr.unpack_format(strval, size), size*8))
         return ConstExpression(self.symrepr._claripy.BitVecVal(0, size*8))
 
