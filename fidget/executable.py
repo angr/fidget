@@ -12,7 +12,7 @@ import logging
 l = logging.getLogger('fidget.executable')
 
 #hopefully the only processors we should ever have to target
-processors = ['X86', 'AMD64', 'ARM', 'PPC32', 'MIPS32', 'PPC64']
+processors = ['X86', 'AMD64', 'ARMEL', 'ARMHF', 'PPC32', 'MIPS32', 'PPC64']
 
 class Executable(object):
     def __init__(self, filename, debugangr=False):
@@ -29,7 +29,6 @@ class Executable(object):
         self.funcman = self.cfg.function_manager
         if self.angr.arch.name not in processors:
             raise FidgetUnsupportedError("Unsupported architecture " + self.angr.arch.name)
-        self.processor = processors.index(self.angr.arch.name)
 
     def locate_physaddr(self, address):
         return self.angr.main_binary.in_which_segment(address)
