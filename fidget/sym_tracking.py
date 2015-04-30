@@ -77,7 +77,7 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
                 else:
                     raise FidgetUnsupportedError("Unknown vex instruction???", stmt)
 
-        if block.jumpkind in ('Ijk_Call', 'Ijk_Boring', 'Ijk_Sys_int128'):
+        if block.jumpkind in ('Ijk_Call', 'Ijk_Boring', 'Ijk_Sys_int128', 'Ijk_SigTRAP'):
             if block.jumpkind == 'Ijk_Call' and binrepr.angr.arch.call_pushes_ret:
                 # Pop the return address off the stack and keep going
                 stack = blockstate.get_reg(binrepr.angr.arch.sp_offset, binrepr.angr.arch.bytes)
