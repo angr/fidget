@@ -22,7 +22,7 @@ class Executable(object):
         if debugangr:
             import ipdb; ipdb.set_trace()
 
-        self.angr = Project(filename)
+        self.angr = Project(filename, load_options={'auto_load_libs': False})
         self.angr.arch.cache_irsb = False
         self.native_word = self.angr.arch.bits
         self.cfg = self.angr.analyses.CFG() # pylint: disable=no-member
