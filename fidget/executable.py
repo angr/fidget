@@ -43,7 +43,7 @@ class Executable(object):
         if thumb:
             addr += 1
             offset += 1
-        bb = pyvex.IRSB(bytes=byte_string, arch=self.angr.arch.vex_arch, bytes_offset=offset, mem_addr=addr, endness=self.angr.arch.vex_endness)
+        bb = pyvex.IRSB(bytes=byte_string, arch=self.angr.arch, bytes_offset=offset, mem_addr=addr)
         return self.angr.vexer._post_process(bb)
 
     def resign_int(self, n, word_size=None):
