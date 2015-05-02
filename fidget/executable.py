@@ -30,9 +30,6 @@ class Executable(object):
         if self.angr.arch.name not in processors:
             raise FidgetUnsupportedError("Unsupported architecture " + self.angr.arch.name)
 
-    def locate_physaddr(self, address):
-        return self.angr.main_binary.in_which_segment(address)
-
     def relocate_to_physaddr(self, address):
         return self.angr.main_binary.addr_to_offset(address)
 

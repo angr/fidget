@@ -80,14 +80,24 @@ class Fidget(object):
                 l.debug('Skipping MIPS entry point stub target')
                 continue
 
+            # Don't try to patch simprocedures
             if funcaddr in self._binrepr.angr.sim_procedures:
                 l.debug("Skipping simprocedure %s", self._binrepr.angr.sim_procedures[funcaddr][0].__name__)
                 continue
-            # Only patch functions in the text section
-            sec = self._binrepr.locate_physaddr(funcaddr)
-            if sec is None:
+
+            # Don't touch functions not in any segment
+            if self._binrepr.angr.main_binary.find_segment_containing(funcaddr) is None:
                 l.debug('Skipping function %s not mapped', func.name)
                 continue
+
+            # If the text section exists, only patch functions in it
+            if '.text' not in self._binrepr.angr.main_binary.sections_map:
+                sec = self._binrepr.angr.main_binary.find_section_containing(funcaddr)
+                if sec is None or sec.name != '.text':
+                    l.debug('Skipping function %s not in .text', func.name)
+                    continue
+
+            # Don't patch functions in the PLT
             if funcaddr in self._binrepr.angr.main_binary.plt.values():
                 l.debug('Skipping function %s in PLT', func.name)
                 continue
