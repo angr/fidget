@@ -78,7 +78,7 @@ class BinaryData():
             symrepr.add(constraint)
 
     def search_value(self):
-        if self.binrepr.processor == 2:
+        if self.binrepr.angr.arch.name in ('ARMEL', 'ARMHF'):
             self.bit_length = 32
             if len(self.insbytes) == 4:
                 self.armins = struct.unpack('I', self.insbytes)[0]
@@ -225,7 +225,7 @@ class BinaryData():
                         result = self.endian_reverse(result, word_size/8)
                     # On PPC64, the lowest two bits of immediate values are used for other things
                     # Mask those out
-                    if self.binrepr.processor == 5:
+                    if self.binrepr.angr.arch.name == 'PPC64':
                         result = result & ~3
                         self.modconstraint = 4
                     result = self.binrepr.resign_int(result, word_size)
@@ -411,7 +411,7 @@ class BinaryData():
             offset = self.bit_offset/8
             for i, c in enumerate(puts):
                 outs[i+offset] = c
-            if self.binrepr.processor == 5:
+            if self.binrepr.angr.arch.name == 'PPC64':
                 orgval = self.binrepr.unpack_format(self.insbytes, len(self.insbytes))
                 newval = self.binrepr.unpack_format(''.join(outs), len(outs))
                 newval |= orgval & 3
