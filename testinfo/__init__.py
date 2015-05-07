@@ -143,7 +143,7 @@ class Process:
         kwargs = {'cwd': mydir}
         if not async:
             kwargs['stdout'] = subprocess.PIPE
-        print command
+        #print command
         self.process = subprocess.Popen(command, **kwargs)
         if async:
             time.sleep(0.5)
