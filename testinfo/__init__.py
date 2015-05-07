@@ -108,7 +108,7 @@ def boot(binary):
 
 qemu_name = {
     'x86_64': None,
-    'i386': None,
+    'i386': 'qemu-i386',
     'ppc': 'qemu-ppc',
     'ppc64': 'qemu-ppc64',
     'armel': 'qemu-arm',
