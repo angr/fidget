@@ -88,7 +88,7 @@ def boot(binary):
 
     arch = ''
 
-    for archname in arch_bullcrap:
+    for archname in qemu_name:
         if archname in binary and len(archname) > len(arch):
             arch = archname
     if arch == '':
@@ -106,30 +106,44 @@ def boot(binary):
 
     return Process(binary=binary, async=async, arch=arch, socketserver=socketserver)
 
-arch_bullcrap = {
-    'x86_64': [],
-    'i386': [],
-    'ppc': ['qemu-ppc', '-L', '/usr/powerpc-linux-gnu', '-E', 'LD_LIBRARY_PATH=/usr/powerpc-linux-gnu/lib'],
-    'ppc64': ['qemu-ppc64', '-L', '/usr/powerpc-linux-gnu', '-E', 'LD_LIBRARY_PATH=/usr/powerpc-linux-gnu/lib64'],
-    'armel': ['qemu-arm', '-L', '/usr/arm-linux-gnueabi', '-E', 'LD_LIBRARY_PATH=/usr/arm-linux-gnueabi/lib'],
-    'armhf': ['qemu-arm', '-L', '/usr/arm-linux-gnueabihf', '-E', 'LD_LIBRARY_PATH=/usr/arm-linux-gnueabihf/lib'],
-    'aarch64': ['qemu-aarch64', '-L', '/usr/aarch64-linux-gnu', '-E', 'LD_LIBRARY_PATH=/usr/aarch64-linux-gnu/lib'],
-    'mips': ['qemu-mips', '-L', '/usr/mips-linux-gnu', '-E', 'LD_LIBRARY_PATH=/usr/mips-linux-gnu/lib'],
-    'mipsel': ['qemu-mipsel', '-L', '/usr/mipsel-linux-gnu', '-E', 'LD_LIBRARY_PATH=/usr/mipsel-linux-gnu/lib'],
+qemu_name = {
+    'x86_64': None,
+    'i386': None,
+    'ppc': 'qemu-ppc',
+    'ppc64': 'qemu-ppc64',
+    'armel': 'qemu-arm',
+    'armhf': 'qemu-arm',
+    'aarch64': 'qemu-aarch64',
+    'mips': 'qemu-mips',
+    'mipsel': 'qemu-mipsel',
+}
+
+ld_name = {
+    'x86_64': 'ld-linux-x86-64.so.2',
+    'i386': 'ld-linux.so.2',
+    'ppc': 'ld.so.1',
+    'ppc64': 'ld64.so.1',
+    'mips': 'ld.so.1',
+    'mipsel': 'ld.so.1',
+    'armel': 'ld-linux.so.3',
+    'armhf': 'ld-linux-armhf.so.3'
 }
 
 mydir = str(os.path.dirname(os.path.realpath(__file__)))
 
 class Process:
     def __init__(self, binary, async, arch, socketserver):
-        command = arch_bullcrap[arch] + [binary]
+        if qemu_name[arch] is None:
+            command = [binary]
+        else:
+            command = [qemu_name[arch], '-E', 'LD_LIBRARY_PATH=' + os.path.dirname(binary), os.path.join(os.path.dirname(binary), ld_name[arch]), binary]
         if socketserver:
             servestdio = str(os.path.join(mydir, 'serve-stdio'))
             command = [servestdio, ' '.join(command), str(socketserver)]
         kwargs = {'cwd': mydir}
         if not async:
             kwargs['stdout'] = subprocess.PIPE
-        #print command
+        print command
         self.process = subprocess.Popen(command, **kwargs)
         if async:
             time.sleep(0.5)
