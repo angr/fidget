@@ -1,6 +1,4 @@
 import struct
-import claripy
-
 from . import vexutils
 from .errors import FidgetError, \
                     FidgetUnsupportedError, \
@@ -20,6 +18,19 @@ l = logging.getLogger('fidget.binary_data')
 # Further down is BinaryDataConglomerate
 # Which is a simple way to pass around values that actually depend
 # on multiple numbers in the binary
+
+# http://www.falatic.com/index.php/108/python-and-bitwise-rotation
+# Rotate left: 0b1001 --> 0b0011
+rol = lambda val, r_bits, max_bits: \
+    (val << r_bits%max_bits) & (2**max_bits-1) | \
+    ((val & (2**max_bits-1)) >> (max_bits-(r_bits%max_bits)))
+
+# Rotate right: 0b1001 --> 0b1100
+ror = lambda val, r_bits, max_bits: \
+    ((val & (2**max_bits-1)) >> r_bits%max_bits) | \
+    (val << (max_bits-(r_bits%max_bits)) & (2**max_bits-1))
+
+ARM_IMM32_MASKS = [ror(0xff, y, 32) for y in xrange(0, 32, 2)]
 
 class BinaryData():
     def __init__(self, mark, path, cleanval, dirtyval, binrepr, symrepr):
@@ -81,16 +92,15 @@ class BinaryData():
         if self.binrepr.angr.arch.name in ('ARMEL', 'ARMHF'):
             self.bit_length = 32
             if len(self.insbytes) == 4:
-                self.armins = struct.unpack('I', self.insbytes)[0]
+                self.armins = struct.unpack(self.binrepr.angr.arch.struct_fmt(32), self.insbytes)[0]
             elif len(self.insbytes) == 2:
-                self.armins = struct.unpack('H', self.insbytes)[0]
+                self.armins = struct.unpack(self.binrepr.angr.arch.struct_fmt(16), self.insbytes)[0]
             else:
                 raise FidgetError("Holy crap ARM what???")
             if not self.armthumb and self.armins & 0x0C000000 == 0x04000000:
                 # LDR
                 self.armop = 1
                 thoughtval = self.armins & 0xFFF
-                thoughtval *= 1 if self.armins & 0x00800000 else -1
                 if thoughtval != self.value:
                     raise ValueNotFoundError
             elif not self.armthumb and self.armins & 0x0E000000 == 0x02000000:
@@ -102,9 +112,8 @@ class BinaryData():
                 thoughtval &= 0xFFFFFFFF
                 if thoughtval != self.value:
                     raise ValueNotFoundError
-                self.bit_shift = self.symrepr._claripy.BitVec(hex(self.memaddr)[2:] + '_shift', 4)
-                #self.symval = self.binrepr.claripy.BitVec(hex(self.memaddr)[2:] + '_imm', 32)
-                self.symval8 = self.symrepr._claripy.BitVec(hex(self.memaddr)[2:] + '_imm8', 8)
+                self.bit_shift = self.symrepr._claripy.BitVec('%x_shift' % self.memaddr, 4)
+                self.symval8 = self.symrepr._claripy.BitVec('%x_imm8' % self.memaddr, 8)
                 self.constraints.append(self.symval == self.symrepr._claripy.RotateRight(self.symval8.zero_extend(32-8), self.bit_shift.zero_extend(32-4)*2))
             elif not self.armthumb and self.armins & 0x0E400090 == 0x00400090:
                 # LDRH
@@ -305,22 +314,20 @@ class BinaryData():
 
     def get_patched_instruction(self, value):
         if self.armop == 1:
-            newval = self.armins & 0xFF7FF000
-            newimm = self.binrepr.resign_int(value)
-            if newimm > 0:
-                newval |= 0x00800000
-            newval |= abs(newimm)
+            newval = self.armins & 0xFFFFF000
+            newval |= value
             return struct.pack('I', newval)
         elif self.armop == 2:
             newval = self.armins & 0xFFFFF000
-            clrp = claripy.ClaripyStandalone('fidget_quicksolve_%x' % self.memaddr)
-            symrepr = clrp.solver()
-            self.apply_constraints(symrepr)
-            symrepr.add(self.symval == value)
-            newimm = symrepr.any(self.symval8).value
-            newimm = self.binrepr.resign_int(newimm)
-            newshift = symrepr.any(self.bit_shift).value
-            newval |= newshift << 8
+            newimm = self.binrepr.unsign_int(value)
+            for i, mask in enumerate(ARM_IMM32_MASKS):
+                if newimm & mask == newimm:
+                    newrot = i
+                    newimm = rol(newimm, i*2, 32)
+                    break
+            else:
+                raise FidgetError("Unrepresentable ARM immediate!")
+            newval |= newrot << 8
             newval |= newimm
             return struct.pack('I', newval)
         elif self.armop == 3:
@@ -342,6 +349,7 @@ class BinaryData():
         elif self.armop == 5:
             newval = self.armins & 0xFF00
             newval |= value / 4
+            newval = self.binrepr.unsign_int
             return struct.pack('H', newval)
         elif self.armop == 6:
             newval = self.armins & 0xFF80
@@ -422,7 +430,7 @@ class BinaryData():
 
     def get_range(self):
         if self.armop == 1:
-           return (-0xFFF, 0x1000)
+           return (0, 0x1000)
         elif self.armop == 2:
             return (0, 0xFF000001)
         elif self.armop in (3, 9):
