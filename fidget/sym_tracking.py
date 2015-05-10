@@ -30,7 +30,7 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
         # FIXME: This part might break for thumb
         for mark in imarks:
             cache.add(mark.addr)
-            insnblock = binrepr.angr.block(mark.addr, max_size=mark.len, num_inst=-1)
+            insnblock = binrepr.angr.block(mark.addr, max_size=mark.len)
             temps = TempStore(insnblock.tyenv)
             blockstate.load_tempstore(temps)
             stmtgen = enumerate(insnblock.statements)
