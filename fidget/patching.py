@@ -63,7 +63,7 @@ class Fidget(object):
                 for succ, jumpkind in self._binrepr.cfg.get_successors_and_jumpkind(context):
                     if jumpkind == 'Ijk_Call':
                         do_not_touch = succ.addr
-                        l.debug('Found MIPS entry point stub target %s', hex(do_not_touch))
+                        l.debug('Found MIPS entry point stub target %#x', do_not_touch)
 
         last_size = 0
         successes = 0
@@ -129,7 +129,7 @@ class Fidget(object):
         stack = Stack(self._binrepr, symrepr, 0)
         for tag, bindata in find_stack_tags(self._binrepr, symrepr, funcaddr):
             if tag == '': continue
-            l.debug('Got a tag at 0x%0.8x: %s: %s', bindata.memaddr, tag, hex(bindata.value))
+            l.debug('Got a tag at 0x%0.8x: %s: %#x', bindata.memaddr, tag, bindata.value)
 
             if tag == 'STACK_ALLOC':
                 if alloc_op is None:
@@ -155,6 +155,10 @@ class Fidget(object):
 
         if alloc_op is None:
             l.info('\tFunction does not appear to have a stack frame (No alloc)')
+            return
+
+        if stack.conc_size <= 0:
+            l.error('\tFunction has invalid stack size of %#x', stack.conc_size)
             return
 
         if len(dealloc_ops) == 0:
@@ -184,10 +188,10 @@ class Fidget(object):
             l.debug("Marked BOTTOM addr %d as special", var.conc_addr)
 
         if stack.num_vars == 0:
-            l.info("\tFunction has 0x%x-byte stack frame, but doesn't use it for local vars", stack.conc_size)
+            l.info("\tFunction has %#x-byte stack frame, but doesn't use it for local vars", stack.conc_size)
             return
 
-        l.info('\tFunction has a stack frame of %s bytes', hex(stack.conc_size))
+        l.info('\tFunction has a stack frame of %#x bytes', stack.conc_size)
         l.info('\t%d access%s to %d address%s %s made.',
             stack.num_accs, '' if stack.num_accs == 1 else 'es',
             stack.num_vars, '' if stack.num_vars == 1 else 'es',
@@ -225,7 +229,7 @@ class Fidget(object):
         #print
 
         if not symrepr.satisfiable():
-            l.critical('(%s) Safe constraints unsatisfiable, fix this NOW', hex(funcaddr))
+            l.critical('(%#x) Safe constraints unsatisfiable, fix this NOW', funcaddr)
             raise FidgetError("You're a terrible programmer")
 
         # z3 is smart enough that this doesn't add any noticable overhead
@@ -246,7 +250,7 @@ class Fidget(object):
         for var in stack:
             fixedval = symrepr.any(var.sym_addr)
             fixedval = self._binrepr.resign_int(fixedval.value, fixedval.size())
-            l.debug('Moved %s (size %s) to %s', hex(var.conc_addr), var.size, hex(fixedval))
+            l.debug('Moved %#x (size %#x) to %#x', var.conc_addr, var.size, fixedval)
 
         self._stack_patch_data += alloc_op.get_patch_data(symrepr)
         for dealloc in dealloc_ops:
