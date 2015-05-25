@@ -1,4 +1,4 @@
-import os
+import os, shutil
 import claripy
 
 from .stack_magic import Stack
@@ -17,6 +17,7 @@ class Fidget(object):
         self._binrepr = Executable(infile, debugangr)
 
     def apply_patches(self, outfile=None):
+        tempfile = '/tmp/fidget-%d' % os.getpid()
         patchdata = self.dump_patches()
         l.info('Accumulated %d patches, %d bytes of data', len(patchdata), sum(map(lambda x: len(x[1]), patchdata)))
 
@@ -25,7 +26,7 @@ class Fidget(object):
         l.debug('Patching to %s', outfile)
 
         fin = open(self.infile)
-        fout = open(outfile, 'w')
+        fout = open(tempfile, 'w')
 
         buf = 'a'
         while buf:
@@ -37,7 +38,8 @@ class Fidget(object):
             fout.write(data)
         fin.close()
         fout.close()
-        os.chmod(outfile, 0755)
+        os.chmod(tempfile, 0755)
+        shutil.move(tempfile, outfile)
         l.debug('Patching complete!')
 
     def dump_patches(self):
@@ -162,7 +164,8 @@ class Fidget(object):
             return
 
         if len(dealloc_ops) == 0:
-            l.warning('\tFunction does not ever deallocate stack frame')
+            l.error('\tFunction does not ever deallocate stack frame')
+            return
 
     # Find the lowest sp-access that isn't an argument to the next function
     # By starting at accesses to [esp] and stepping up a word at a time
@@ -250,7 +253,10 @@ class Fidget(object):
         for var in stack:
             fixedval = symrepr.any(var.sym_addr)
             fixedval = self._binrepr.resign_int(fixedval.value, fixedval.size())
-            l.debug('Moved %#x (size %#x) to %#x', var.conc_addr, var.size, fixedval)
+            if var.size is None:
+                l.debug('Moved %#x (unsized) to %#x', var.conc_addr, fixedval)
+            else:
+                l.debug('Moved %#x (size %#x) to %#x', var.conc_addr, var.size, fixedval)
 
         self._stack_patch_data += alloc_op.get_patch_data(symrepr)
         for dealloc in dealloc_ops:

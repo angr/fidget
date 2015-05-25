@@ -7,7 +7,7 @@
 *.til
 *.nam
 *.pyc
-goodoutput
-badoutput
 .coldat
 patched_*
+tests
+*.egg-info

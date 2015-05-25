@@ -1,7 +1,7 @@
 # functions that provide the interface for messing with
 # binaries and stuff, via whatever tools.
 
-import struct
+import superstruct as struct
 
 from angr import Project
 import pyvex
@@ -25,7 +25,7 @@ class Executable(object):
         self.angr = Project(filename, load_options={'auto_load_libs': False})
         self.angr.arch.cache_irsb = False
         self.native_word = self.angr.arch.bits
-        self.cfg = self.angr.analyses.CFG() # pylint: disable=no-member
+        self.cfg = self.angr.analyses.CFG(context_sensitivity_level=0) # pylint: disable=no-member
         self.funcman = self.cfg.function_manager
         if self.angr.arch.name not in processors:
             raise FidgetUnsupportedError("Unsupported architecture " + self.angr.arch.name)
@@ -58,11 +58,11 @@ class Executable(object):
         return int(n)
 
     def pack_format(self, val, size):
-        fmt = ('<' if self.is_little_endian() else '>') + {1: 'B', 2: 'H', 4: 'I', 8: 'Q'}[size]
+        fmt = ('<' if self.is_little_endian() else '>') + {1: 'B', 2: 'H', 4: 'I', 8: 'Q', 16: 'X', 32: 'Y', 64: 'Z'}[size]
         return struct.pack(fmt, val)
 
     def unpack_format(self, val, size):
-        fmt = ('<' if self.is_little_endian() else '>') + {1: 'B', 2: 'H', 4: 'I', 8: 'Q'}[size]
+        fmt = ('<' if self.is_little_endian() else '>') + {1: 'B', 2: 'H', 4: 'I', 8: 'Q', 16: 'X', 32: 'Y', 64: 'Z'}[size]
         return struct.unpack(fmt, val)[0]
 
     def is_little_endian(self):

@@ -38,7 +38,6 @@ def equals(item1, item2):
             yield (str(a), str(b))      # Nope.
         elif a.tag == 'Ist_Exit':
             yield (a.jk, b.jk)
-            yield (a.is_flat, b.is_flat)
             queue.append((a.dst, b.dst))
             queue.append((a.guard, b.guard))
         elif a.tag == 'Iex_Get':
