@@ -10,11 +10,13 @@ import logging
 l = logging.getLogger('fidget.patching')
 
 class Fidget(object):
-    def __init__(self, infile, debugangr=False):
+    def __init__(self, infile, cfg_options=None, debugangr=False):
         self.infile = infile
         self.error = False
         self._stack_patch_data = []
-        self._binrepr = Executable(infile, debugangr)
+        if cfg_options is None:
+            cfg_options = {'enable_symbolic_back_traversal': True}
+        self._binrepr = Executable(infile, cfg_options, debugangr)
 
     def apply_patches(self, outfile=None):
         tempfile = '/tmp/fidget-%d' % os.getpid()
@@ -102,6 +104,11 @@ class Fidget(object):
             # Don't patch functions in the PLT
             if funcaddr in self._binrepr.angr.main_binary.plt.values():
                 l.debug('Skipping function %s in PLT', func.name)
+                continue
+
+            # If the CFG couldn't parse an indirect jump, avoid
+            if func.has_unresolved_jumps:
+                l.debug("Skipping function %s with unresolved jumps", func.name)
                 continue
 
             # Check if the function is white/blacklisted

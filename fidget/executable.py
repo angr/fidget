@@ -15,7 +15,7 @@ l = logging.getLogger('fidget.executable')
 processors = ['X86', 'AMD64', 'ARMEL', 'ARMHF', 'PPC32', 'MIPS32', 'PPC64']
 
 class Executable(object):
-    def __init__(self, filename, debugangr=False):
+    def __init__(self, filename, cfg_options, debugangr=False):
         l.info("Loading %s", filename)
         self.verbose = 0
         self.filename = filename
@@ -25,7 +25,7 @@ class Executable(object):
         self.angr = Project(filename, load_options={'auto_load_libs': False})
         self.angr.arch.cache_irsb = False
         self.native_word = self.angr.arch.bits
-        self.cfg = self.angr.analyses.CFG(context_sensitivity_level=0) # pylint: disable=no-member
+        self.cfg = self.angr.analyses.CFG(**cfg_options) # pylint: disable=no-member
         self.funcman = self.cfg.function_manager
         if self.angr.arch.name not in processors:
             raise FidgetUnsupportedError("Unsupported architecture " + self.angr.arch.name)
