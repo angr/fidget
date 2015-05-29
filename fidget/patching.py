@@ -10,13 +10,13 @@ import logging
 l = logging.getLogger('fidget.patching')
 
 class Fidget(object):
-    def __init__(self, infile, cfg_options=None, debugangr=False):
+    def __init__(self, infile, cache=False, cfg_options=None, debugangr=False):
         self.infile = infile
         self.error = False
         self._stack_patch_data = []
         if cfg_options is None:
             cfg_options = {'enable_symbolic_back_traversal': True}
-        self._binrepr = Executable(infile, cfg_options, debugangr)
+        self._binrepr = Executable(infile, cache, cfg_options, debugangr)
 
     def apply_patches(self, outfile=None):
         tempfile = '/tmp/fidget-%d' % os.getpid()

@@ -29,6 +29,8 @@ def addopt(options, option, argv):
         options['debug'] = True
     elif option in ('debugangr',):
         options['debugangr'] = True
+    elif option in ('cache',):
+        options['cache'] = True
     elif option in ('l', 'log'):
         tag = next(argv)
         lvl = next(argv)
@@ -61,6 +63,7 @@ Options:
     --huge                  Make stack frames gigantic
     --debug                 Pop an ipdb shell at the main function, break on exceptions
     --debugangr             Pop an ipdb shell right before calling into angr
+    --cache                 Use a pickled Project and CFG from a file
     -l, --log [tag] [level] Change logging levels
     --logfile [file]        Log output to a file
     -e, --exit-on-error     Exits at first error instead of trying more files"""
@@ -202,7 +205,7 @@ def main():
     if len(sys.argv) < 2:
         usage(False)
     else:
-        options = {"logging": {"fidget": 20, "angr": 'WARNING', "simuvex": 'WARNING', "cle": 'WARNING', "claripy": 'ERROR'}, "logfile": None, "safe": False, "largemode": False, "infiles": [], "outfiles": [], "whitelist": [], "blacklist": [], "debug": False, 'debugangr': False, "exit-on-error": False, "inplace": False}
+        options = {"logging": {"fidget": 20, "angr": 'WARNING', "simuvex": 'WARNING', "cle": 'WARNING', "claripy": 'ERROR'}, "logfile": None, "safe": False, "largemode": False, "infiles": [], "outfiles": [], "whitelist": [], "blacklist": [], "debug": False, 'debugangr': False, "exit-on-error": False, "inplace": False, "cache": False}
         argv = iter(sys.argv)
         next(argv)
         for arg in argv:
@@ -240,6 +243,7 @@ def main():
         debug = options.pop('debug')
         debugangr = options.pop('debugangr')
         inplace = options.pop('inplace')
+        cache = options.pop('cache')
 
         outfiles = options.pop('outfiles')
         infiles = options.pop('infiles')
@@ -250,7 +254,7 @@ def main():
             try:
                 if debug:
                     ipdb.set_trace()
-                patch_file(infile, outfile, {'Fidget': {'debugangr': debugangr}, 'stacks': options})
+                patch_file(infile, outfile, {'Fidget': {'debugangr': debugangr, 'cache': cache}, 'stacks': options})
             except (Exception, KeyboardInterrupt):              # pylint: disable=broad-except
                 traceback.print_exc()
                 if debug:

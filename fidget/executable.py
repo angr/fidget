@@ -2,6 +2,7 @@
 # binaries and stuff, via whatever tools.
 
 import superstruct as struct
+import pickle
 
 from angr import Project
 import pyvex
@@ -15,18 +16,34 @@ l = logging.getLogger('fidget.executable')
 processors = ['X86', 'AMD64', 'ARMEL', 'ARMHF', 'PPC32', 'MIPS32', 'PPC64']
 
 class Executable(object):
-    def __init__(self, filename, cfg_options, debugangr=False):
+    def __init__(self, filename, cache=False, cfg_options=None, debugangr=False):
         l.info("Loading %s", filename)
         self.verbose = 0
         self.filename = filename
         if debugangr:
             import ipdb; ipdb.set_trace()
 
-        self.angr = Project(filename, load_options={'auto_load_libs': False})
-        self.angr.arch.cache_irsb = False
-        self.native_word = self.angr.arch.bits
-        self.cfg = self.angr.analyses.CFG(**cfg_options) # pylint: disable=no-member
+        cfgname = filename + '.fcfg'
+        if cfg_options is None:
+            cfg_options = {}
+        try:
+            if not cache: raise IOError('fuck off')
+            fh = open(cfgname)
+            self.angr, self.cfg = pickle.load(fh)
+            fh.close()
+        except (IOError, OSError, pickle.UnpicklingError):
+            self.angr = Project(filename, load_options={'auto_load_libs': False})
+            self.angr.arch.cache_irsb = False
+            self.cfg = self.angr.analyses.CFG(**cfg_options) # pylint: disable=no-member
+            try:
+                fh = open(cfgname, 'w')
+                pickle.dump((self.angr, self.cfg), fh)
+                fh.close()
+            except (IOError, OSError, pickle.PicklingError):
+                l.exception('Error pickling CFG')
+
         self.funcman = self.cfg.function_manager
+        self.native_word = self.angr.arch.bits
         if self.angr.arch.name not in processors:
             raise FidgetUnsupportedError("Unsupported architecture " + self.angr.arch.name)
 
