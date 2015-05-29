@@ -233,11 +233,10 @@ def main():
         else:
             handler = logging.FileHandler(logfile)
         handler.setFormatter(formatter)
+        logging.root.addHandler(handler)
 
         for tag, lvl in logopt.iteritems():
-            logger = logging.getLogger(tag)
-            logger.setLevel(lvl)
-            logger.addHandler(handler)
+            logging.getLogger(tag).setLevel(lvl)
 
         exit_on_error = options.pop('exit-on-error')
         debug = options.pop('debug')
