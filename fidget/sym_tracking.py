@@ -3,6 +3,7 @@
 
 from angr import AngrMemoryError
 import pyvex
+import claripy
 
 from .binary_data import BinaryData, BinaryDataConglomerate
 from .errors import FidgetError, FidgetUnsupportedError
@@ -79,19 +80,19 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
                     SmartExpression(blockstate, stmt.data, mark, [stmt_idx, 'data'])
                 elif stmt.tag == 'Ist_CAS':     # HA ha no
                     if stmt.oldLo != 4294967295:
-                        blockstate.tempstore.write(stmt.oldLo, ConstExpression(symrepr._claripy.BVV(0, binrepr.angr.arch.bits), False))
+                        blockstate.tempstore.default(stmt.oldLo, symrepr._claripy)
                     if stmt.oldHi != 4294967295:
-                        blockstate.tempstore.write(stmt.oldHi, ConstExpression(symrepr._claripy.BVV(0, binrepr.angr.arch.bits), False))
+                        blockstate.tempstore.default(stmt.oldHi, symrepr._claripy)
                 elif stmt.tag == 'Ist_Dirty':   # hahAHAHAH NO
                     if stmt.tmp != 4294967295:
-                        blockstate.tempstore.write(stmt.tmp, ConstExpression(symrepr._claripy.BVV(0, binrepr.angr.arch.bits), False))
+                        blockstate.tempstore.default(stmt.tmp, symrepr._claripy.BVV)
                 else:
                     raise FidgetUnsupportedError("Unknown vex instruction???", stmt)
 
         if block.jumpkind == 'Ijk_Call' or block.jumpkind in OK_CONTINUE_JUMPS:
             if block.jumpkind == 'Ijk_Call' and binrepr.angr.arch.call_pushes_ret:
                 # Pop the return address off the stack and keep going
-                stack = blockstate.get_reg(binrepr.angr.arch.sp_offset, binrepr.angr.arch.bytes)
+                stack = blockstate.get_reg(binrepr.angr.arch.sp_offset, binrepr.angr.arch.bits)
                 popped = stack.deps[0] if stack.deps[0].stack_addr else stack.deps[1]
                 blockstate.regs[binrepr.angr.arch.sp_offset] = popped
                 # Discard the last two tags -- they'll be an alloc and an access for the call (the push and the retaddr)
@@ -140,10 +141,16 @@ class TempStore(object):
         return vexutils.extract_int(self.tyenv.types[tmp])
 
     def write(self, tmp, value):
+        if value.type != self.tyenv.types[tmp]:
+            raise ValueError('Invalid type!')
         size = self.size_of(tmp)
         value.cleanval = vexutils.ZExtTo(size, value.cleanval)
         value.dirtyval = vexutils.ZExtTo(size, value.dirtyval)
         self.storage[tmp] = value
+
+    def default(self, tmp, clrp):
+        val = ConstExpression.default(clrp, self.tyenv.types[tmp])
+        self.write(tmp, val)
 
 class AccessType:       # pylint: disable=no-init
     READ = 1
@@ -160,7 +167,7 @@ class BlockState:
         self.stack_cache = {}
         self.tags = []
         self.tempstore = None
-        stackexp = ConstExpression(symrepr._claripy.BitVecVal(0, binrepr.angr.arch.bits), True)
+        stackexp = ConstExpression(symrepr._claripy.BVV(0, binrepr.angr.arch.bits), 'Ity_I%d' % binrepr.angr.arch.bits, True)
         stackexp.stack_addr = True
         self.regs[self.binrepr.angr.arch.sp_offset] = stackexp
 
@@ -176,24 +183,40 @@ class BlockState:
     def load_tempstore(self, tempstore):
         self.tempstore = tempstore
 
-    def get_reg(self, regnum, size):
+    def get_reg(self, regnum, ty):
+        if isinstance(ty, (int, long)):
+            ty = 'Ity_I%d' % ty
+
         if not regnum in self.regs:
-            return ConstExpression(self.symrepr._claripy.BitVecVal(0, size*8), False)
-        return self.regs[regnum].truncate(size*8)
+            if 'F' in ty or vexutils.extract_int(ty) > self.binrepr.angr.arch.bits:
+                self.regs[regnum] = ConstExpression.default(self.symrepr._claripy, ty)
+            else:
+                self.regs[regnum] = ConstExpression.default(self.symrepr._claripy, 'Ity_I%d' % self.binrepr.angr.arch.bits)
+            return self.regs[regnum].truncate(ty)
+
+        if 'F' in self.regs[regnum].type:
+            if self.regs[regnum].type.split('_')[1] != ty.split('_')[1]:
+                l.warning("Don't know how to change type %s to %s, discarding", self.regs[regnum].type, ty)
+                self.regs[regnum] = ConstExpression.default(self.symrepr._claripy, ty)
+            return self.regs[regnum]
+        else:
+            return self.regs[regnum].truncate(ty)
+
 
     def get_tmp(self, tmpnum):
         return self.tempstore.read(tmpnum)
 
-    def get_mem(self, addr, size):
+    def get_mem(self, addr, ty):
         if addr.stack_addr:
             if addr.cleanval in self.stack_cache:
                 return self.stack_cache[addr.cleanval]
-            return ConstExpression(self.symrepr._claripy.BitVecVal(0, size*8), False)
+            return ConstExpression.default(self.symrepr._claripy, ty)
         cleanestval = addr.cleanval.model.value
-        if cleanestval in self.binrepr.angr.ld.memory:
-            strval = ''.join(self.binrepr.angr.ld.memory[cleanestval + i] for i in xrange(size))
-            return ConstExpression(self.symrepr._claripy.BitVecVal(self.binrepr.unpack_format(strval, size), size*8), True)
-        return ConstExpression(self.symrepr._claripy.BitVecVal(0, size*8), False)
+        if cleanestval in self.binrepr.angr.ld.memory and 'F' not in ty:    # TODO: support this
+            size_bytes = vexutils.extract_int(ty)/8
+            strval = ''.join(self.binrepr.angr.ld.memory[cleanestval + i] for i in xrange(size_bytes))
+            return ConstExpression(self.symrepr._claripy.BVV(self.binrepr.unpack_format(strval, size_bytes), size_bytes*8), ty, True)
+        return ConstExpression.default(self.symrepr._claripy, ty)
 
     def access(self, addr_expression, access_type):
         if not addr_expression.stack_addr:
@@ -204,9 +227,12 @@ class BlockState:
         if vextatement.tag == 'Ist_WrTmp':
             self.tempstore.write(vextatement.tmp, expression)
         elif vextatement.tag == 'Ist_Put':
-            if not vextatement.offset in self.regs:
-                self.regs[vextatement.offset] = ConstExpression(self.symrepr._claripy.BitVecVal(0, self.binrepr.angr.arch.bits), False)
-            self.regs[vextatement.offset] = expression.overwrite(self.regs[vextatement.offset])
+            if 'F' in expression.type or expression.size > self.binrepr.angr.arch.bits:
+                self.regs[vextatement.offset] = expression
+            else:
+                if not vextatement.offset in self.regs:
+                    self.regs[vextatement.offset] = ConstExpression.default(self.symrepr._claripy, 'Ity_I%d' % self.binrepr.angr.arch.bits)
+                self.regs[vextatement.offset] = expression.overwrite(self.regs[vextatement.offset])
             if vextatement.offset == self.binrepr.angr.arch.sp_offset:
                 if not expression.is_concrete:
                     self.tags.append(('STACK_ALLOCA', expression.make_bindata(0)))
@@ -242,21 +268,32 @@ class SmartExpression:
         self.rootval = False
         self.bincache = [None]
         self.size = vexpression.result_size if not vexpression.tag.startswith('Ico_') else vexpression.size
-        self.cleanval = self.symrepr._claripy.BitVecVal(0, self.size)
-        self.dirtyval = self.symrepr._claripy.BitVecVal(0, self.size)
+        self.type = vexpression.result_type if not vexpression.tag.startswith('Ico_') else vexpression.type
+        self.cleanval = vexutils.make_default_value(self.symrepr._claripy, self.type)
+        self.dirtyval = vexutils.make_default_value(self.symrepr._claripy, self.type)
         if vexpression.tag == 'Iex_Get':
-            self.copy_to_self(blockstate.get_reg(vexpression.offset, self.size/8))
+            self.copy_to_self(blockstate.get_reg(vexpression.offset, self.type))
         elif vexpression.tag == 'Iex_RdTmp':
             self.copy_to_self(self.blockstate.get_tmp(vexpression.tmp))
         elif vexpression.tag == 'Iex_Load':
             addr_expression = SmartExpression(blockstate, vexpression.addr, mark, path + ['addr'])
             self.blockstate.access(addr_expression, AccessType.READ)
-            self.copy_to_self(self.blockstate.get_mem(addr_expression, self.size/8))
+            self.copy_to_self(self.blockstate.get_mem(addr_expression, self.type))
         elif vexpression.tag == 'Iex_Const' or vexpression.tag.startswith('Ico_'):
             if vexpression.tag == 'Iex_Const':
                 vexpression = vexpression.con
-            self.cleanval = self.symrepr._claripy.BitVecVal(vexpression.value, self.size)
-            self.dirtyval = self.symrepr._claripy.BitVec('%x_%d' % (mark.addr, path[0]), self.size)
+            if 'F' in self.type:
+                if self.size == 32:
+                    self.cleanval = self.symrepr._claripy.FPV(vexpression.value, claripy.FSORT_FLOAT)
+                    self.dirtyval = self.symrepr._claripy.FP('%x_%d' % (mark.addr, path[0]), claripy.FSORT_FLOAT)
+                elif self.size == 64:
+                    self.cleanval = self.symrepr._claripy.FPV(vexpression.value, claripy.FSORT_DOUBLE)
+                    self.dirtyval = self.symrepr._claripy.FP('%x_%d' % (mark.addr, path[0]), claripy.FSORT_DOUBLE)
+                else:
+                    raise FidgetUnsupportedError("Why is there a FP const of size %d" % self.size)
+            else:
+                self.cleanval = self.symrepr._claripy.BVV(vexpression.value, self.size)
+                self.dirtyval = self.symrepr._claripy.BV('%x_%d' % (mark.addr, path[0]), self.size)
             self.rootval = True
             self.is_concrete = True
         elif vexpression.tag == 'Iex_ITE':
@@ -314,7 +351,7 @@ class SmartExpression:
         for i, expr in enumerate(expr_list):
             if i in exception_list: continue
             if expr.rootval:
-                expr_list[i] = ConstExpression(expr.cleanval, expr.is_concrete)
+                expr_list[i] = ConstExpression(expr.cleanval, expr.type, expr.is_concrete)
 
     def make_bindata(self, flags=None):
         if self.bincache[0] is not None and flags is None:
@@ -346,6 +383,7 @@ class SmartExpression:
         out = CustomExpression()
         out.deps = [smaller, larger]
         out.size = larger.size
+        out.type = larger.type
         out.blockstate = smaller.blockstate
         out.mark = smaller.mark # ??? what will be done with this
         out.path = smaller.path
@@ -359,15 +397,19 @@ class SmartExpression:
         out.dirtyval = out.symrepr._claripy.Concat(larger.dirtyval[larger.size-1:smaller.size], smaller.dirtyval)
         return out
 
-    def truncate(self, size):
-        if size > self.size:
-            l.error("Attempting to truncate SmartExpression of size %d to size %d", self.size, size)
+    def truncate(self, ty):
+        if ty == self.type:
             return self
-        if size == self.size:
+        if 'F' in self.type:
+            raise ValueError("Cannot coerce floating point values")
+        size_bits = vexutils.extract_int(ty)
+        if size_bits > self.size:
+            l.error("Attempting to truncate SmartExpression of size %d to size %d", self.size, size_bits)
             return self
         out = CustomExpression()
         out.deps = [self]
-        out.size = size
+        out.size = size_bits
+        out.type = ty
         out.blockstate = self.blockstate
         out.mark = self.mark # ??? what will be done with this
         out.path = self.path
@@ -377,8 +419,8 @@ class SmartExpression:
         out.is_concrete = self.is_concrete
         out.rootval = False
         out.bincache = [None]
-        out.cleanval = self.cleanval[size-1:0]
-        out.dirtyval = self.dirtyval[size-1:0]
+        out.cleanval = self.cleanval[size_bits-1:0]
+        out.dirtyval = self.dirtyval[size_bits-1:0]
         return out
 
     def __str__(self):
@@ -389,8 +431,9 @@ class CustomExpression(SmartExpression):
         pass
 
 class ConstExpression(object):
-    def __init__(self, val, is_concrete):
+    def __init__(self, val, ty, is_concrete):
         self.size = val.size()
+        self.type = ty
         self.cleanval = val
         self.dirtyval = val
         self.deps = []
@@ -405,10 +448,17 @@ class ConstExpression(object):
     def make_bindata():
         return []
 
-    def truncate(self, size):
-        if size > self.size:
-            l.error("Attempting to truncate SmartExpression of size %d to size %d", self.size, size)
+    def truncate(self, ty):
+        if ty == self.type:
             return self
-        if size == self.size:
+        if 'F' in self.type:
+            raise ValueError("Cannot coerce floating point values")
+        size_bits = vexutils.extract_int(ty)
+        if size_bits > self.size:
+            l.error("Attempting to truncate SmartExpression of size %d to size %d", self.size, size_bits)
             return self
-        return ConstExpression(self.cleanval[size-1:0], self.is_concrete)
+        return ConstExpression(self.cleanval[size_bits-1:0], ty, self.is_concrete)
+
+    @staticmethod
+    def default(clrp, ty):
+        return ConstExpression(vexutils.make_default_value(clrp, ty), ty, False)

@@ -1,5 +1,6 @@
 from angr.vexer import SerializableIRSB
 from pyvex import IRSB
+import claripy
 from .errors import FidgetUnsupportedError
 
 IRSBType = (IRSB, SerializableIRSB)
@@ -83,10 +84,12 @@ def _get_from_path(obj, path):
 
 def ZExtTo(size, vec):
     if isinstance(vec, (int, long)): return vec
+    if vec.size() == size: return vec
     return ExtTo(size, vec, vec.zero_extend)
 
 def SExtTo(size, vec):
     if isinstance(vec, (int, long)): return vec
+    if vec.size() == size: return vec
     return ExtTo(size, vec, vec.sign_extend)
 
 def ExtTo(size, vec, func):
@@ -96,3 +99,14 @@ def ExtTo(size, vec, func):
 
 def extract_int(s):
     return int(''.join(d for d in s if d.isdigit()))
+
+def make_default_value(clrp, ty):
+    if 'F' in ty:
+        if '32' in ty:
+            return clrp.FPV(0.0, claripy.FSORT_FLOAT)
+        elif '64' in ty:
+            return clrp.FPV(0.0, claripy.FSORT_DOUBLE)
+        else:
+            raise ValueError("Unknown float type %s" % ty)
+    else:
+        return clrp.BVV(0, extract_int(ty))
