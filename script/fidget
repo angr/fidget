@@ -5,6 +5,8 @@ import ipdb
 import logging
 from fidget import patch_file       # pylint: disable=import-self
 
+l = logging.getLogger('fidget')
+
 def addopt(options, option, argv):
     if option in ('v', 'verbose'):
         options['logging']['fidget'] -= 10
@@ -198,7 +200,8 @@ class PrettyFormatter(logging.Formatter):
         out += CanonColors.colored_level(record.levelno)
         out += record.getMessage()
         if record.exc_info:
-            traceback.print_exception(*record.exc_info)
+            out += '\n'
+            out += ''.join(traceback.format_exception(*record.exc_info))
         return out
 
 def main():
@@ -254,8 +257,12 @@ def main():
                 if debug:
                     ipdb.set_trace()
                 patch_file(infile, outfile, {'Fidget': {'debugangr': debugangr, 'cache': cache}, 'stacks': options})
-            except (Exception, KeyboardInterrupt):              # pylint: disable=broad-except
-                traceback.print_exc()
+            except KeyboardInterrupt:
+                if debug:
+                    ipdb.post_mortem(sys.exc_info()[2])
+                sys.exit(1)
+            except Exception:              # pylint: disable=broad-except
+                l.exception("Unhandled Exception in Fidget!")
                 if debug:
                     ipdb.post_mortem(sys.exc_info()[2])
                 if exit_on_error:
