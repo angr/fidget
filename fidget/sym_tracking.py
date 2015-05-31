@@ -35,6 +35,10 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
         headcache.add(imarks[0].addr)
         # FIXME: This part might break for thumb
         for mark in imarks:
+            if mark.addr != funcaddr and mark.addr in binrepr.funcman.functions:
+                l.warning("\tThis function jumps into another function (%#x). Abort.", mark.addr)
+                yield ("ABORT_HIT_OTHER_FUNCTION_HEAD", mark.addr)
+                return
             cache.add(mark.addr)
             insnblock = binrepr.angr.block(mark.addr, max_size=mark.len, num_inst=1)
             temps = TempStore(insnblock.tyenv)
@@ -235,7 +239,8 @@ class BlockState:
                 self.regs[vextatement.offset] = expression.overwrite(self.regs[vextatement.offset])
             if vextatement.offset == self.binrepr.angr.arch.sp_offset:
                 if not expression.is_concrete:
-                    self.tags.append(('STACK_ALLOCA', expression.make_bindata(0)))
+                    l.warning("This function appears to use alloca(). Abort.")
+                    self.tags.append(('ABORT_ALLOCA', expression.make_bindata(0)))
                 elif expression.cleanval.model.value == 0:
                     self.tags.append(('STACK_DEALLOC', expression.make_bindata(0)))
                 else:

@@ -137,7 +137,10 @@ class Fidget(object):
         dealloc_ops = []  # the instructions that perform a stack deallocation
         stack = Stack(self._binrepr, symrepr, 0)
         for tag, bindata in find_stack_tags(self._binrepr, symrepr, funcaddr):
-            if tag == '': continue
+            if tag == '':
+                continue
+            elif tag.startswith('ABORT'):
+                return
             l.debug('Got a tag at 0x%0.8x: %s: %#x', bindata.memaddr, tag, bindata.value)
 
             if tag == 'STACK_ALLOC':
@@ -146,19 +149,12 @@ class Fidget(object):
                 elif bindata.value < alloc_op.value:
                     alloc_op = bindata
                 stack.conc_size = -alloc_op.value
-
             elif tag == 'STACK_DEALLOC':
                 if not bindata.symval.symbolic:
                     continue
                 dealloc_ops.append(bindata)
-
             elif tag == 'STACK_ACCESS':
                 stack.access(bindata)
-
-            elif tag == 'STACK_ALLOCA':
-                l.warning('\tFunction appears to use alloca, abandoning')
-                return
-
             else:
                 raise FidgetUnsupportedError('You forgot to update the tag list, jerkface!')
 
