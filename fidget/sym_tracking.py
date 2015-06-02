@@ -89,7 +89,7 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
                         blockstate.tempstore.default(stmt.oldHi, symrepr._claripy)
                 elif stmt.tag == 'Ist_Dirty':   # hahAHAHAH NO
                     if stmt.tmp != 4294967295:
-                        blockstate.tempstore.default(stmt.tmp, symrepr._claripy.BVV)
+                        blockstate.tempstore.default(stmt.tmp, symrepr._claripy)
                 else:
                     raise FidgetUnsupportedError("Unknown vex instruction???", stmt)
 
