@@ -15,6 +15,44 @@ l = logging.getLogger('fidget.sym_tracking')
 
 OK_CONTINUE_JUMPS = ('Ijk_FakeRet', 'Ijk_Boring', 'Ijk_FakeRet', 'Ijk_Sys_int128', 'Ijk_SigTRAP', 'Ijk_Sys_syscall')
 
+ROUNDING_IROPS = ('Iop_AddF64', 'Iop_SubF64', 'Iop_MulF64', 'Iop_DivF64',
+                  'Iop_AddF32', 'Iop_SubF32', 'Iop_MulF32', 'Iop_DivF32',
+                  'Iop_AddF128', 'Iop_SubF128', 'Iop_MulF128', 'Iop_DivF128',
+                  'Iop_AddF64r32', 'Iop_SubF64r32', 'Iop_MulF64r32', 'Iop_DivF64r32',
+                  'Iop_F64toI32S', 'Iop_SqrtF64', 'Iop_SqrtF32', 'Iop_SqrtF128',
+                  'Iop_F64toI16S', 'Iop_F64toI32S', 'Iop_F64toI64S', 'Iop_F64toI64U',
+                  'Iop_F64toI32U', 'Iop_I32StoF64', 'Iop_I64StoF64', 'Iop_I64UtoF64',
+                  'Iop_I64UtoF32', 'Iop_I32UtoF32', 'Iop_I32UtoF64', 'Iop_F32toI32S',
+                  'Iop_F32toI64S', 'Iop_F32toI32U', 'Iop_F32toI64U', 'Iop_I32StoF32',
+                  'Iop_I64StoF32', 'Iop_F64toF32'
+                  'Iop_F128toI32S', 'Iop_F128toI64S', 'Iop_F128toI32U', 'Iop_F128toI64U',
+                  'Iop_F128toF64', 'Iop_F128toF32'
+                  'Iop_AtanF64', 'Iop_Yl2xF64', 'Iop_Yl2xp1F64',
+                  'Iop_PRemF64', 'Iop_PRemC3210F64', 'Iop_PRem1F64', 'Iop_PRem1C3210F64',
+                  'Iop_ScaleF64', 'Iop_SinF64', 'Iop_CosF64', 'Iop_TanF64',
+                  'Iop_2xm1F64', 'Iop_RoundF64toInt', 'Iop_RoundF32toInt',
+                  'Iop_MAddF32', 'Iop_MSubF32', 'Iop_MAddF64', 'Iop_MSubF64',
+                  'Iop_MAddF64r32', 'Iop_MSubF64r32',
+                  'Iop_RoundF64toF32', 'Iop_RecpExpF64', 'Iop_RecpExpF64', 'Iop_RecpExpF32',
+                  'Iop_F64toF16', 'Iop_F32toF16',
+                  'Iop_AddD64', 'Iop_SubD64', 'Iop_MulD64', 'Iop_DivD64',
+                  'Iop_AddD128', 'Iop_SubD128', 'Iop_MulD128', 'Iop_DivD128',
+                  'Iop_D64toD32', 'Iop_D128toD64', 'Iop_I64StoD64', 'Iop_I64UtoD64',
+                  'Iop_D64toI32S', 'Iop_D64toI32U', 'Iop_D64toI64S', 'Iop_D64toI64U',
+                  'Iop_D128toI32S', 'Iop_D128toI32U', 'Iop_D128toI64S', 'Iop_D128toI64U',
+                  'Iop_F32toD32', 'Iop_F32toD64', 'Iop_F32toD128', 'Iop_F64toD32',
+                  'Iop_F64toD64', 'Iop_F64toD128', 'Iop_F128toD32', 'Iop_F128toD64',
+                  'Iop_F128toD128', 'Iop_D32toF32', 'Iop_D32toF64', 'Iop_D32toF128',
+                  'Iop_D64toF32', 'Iop_D64toF64', 'Iop_D64toF128', 'Iop_D128toF32',
+                  'Iop_D128toF64', 'Iop_D128toF128', 'Iop_RoundD64toInt',
+                  'Iop_RoundD128toInt', 'Iop_QuantizeD64' 'Iop_QuantizeD128',
+                  'Iop_SignificanceRoundD64', 'Iop_SignificanceRoundD128',
+                  'Iop_Add32Fx4', 'Iop_Sub32Fx4', 'Iop_Mul32Fx4', 'Iop_Div32Fx4',
+                  'Iop_Add64Fx2', 'Iop_Sub64Fx2', 'Iop_Mul64Fx2', 'Iop_Div64Fx2',
+                  'Iop_Add64Fx4', 'Iop_Sub64Fx4', 'Iop_Mul64Fx4', 'Iop_Div64Fx4',
+                  'Iop_Add32Fx8', 'Iop_Sub32Fx8', 'Iop_Mul32Fx8', 'Iop_Div32Fx8'
+                 )
+
 def find_stack_tags(binrepr, symrepr, funcaddr):
     queue = [BlockState(binrepr, symrepr, funcaddr)]
     headcache = set()
@@ -327,8 +365,8 @@ class SmartExpression:
                     self.deps.append(arg)
                 if vexpression.op.startswith('Iop_Mul') or vexpression.op.startswith('Iop_And'):
                     self.shield_constants(self.deps)
-                if vexpression.op == 'Iop_F64toI32S':
-                    self.shield_constants(self.deps, [1])
+                if vexpression.op in ROUNDING_IROPS:
+                    self.shield_constants(self.deps, whitelist=[0])
                 self.cleanval = operations[vexpression.op].calculate(self.symrepr._claripy, *(x.cleanval for x in self.deps))
                 self.dirtyval = operations[vexpression.op].calculate(self.symrepr._claripy, *(x.dirtyval for x in self.deps))
                 if vexpression.op.startswith('Iop_Add') or vexpression.op.startswith('Iop_And') or \
@@ -363,10 +401,9 @@ class SmartExpression:
         self.path = other.path
 
     @staticmethod
-    def shield_constants(expr_list, exception_list=None):
-        exception_list = exception_list if exception_list is not None else []
+    def shield_constants(expr_list, whitelist=None):
         for i, expr in enumerate(expr_list):
-            if i in exception_list: continue
+            if whitelist is not None and i not in whitelist: continue
             if expr.rootval:
                 expr_list[i] = ConstExpression(expr.cleanval, expr.type, expr.is_concrete)
 
