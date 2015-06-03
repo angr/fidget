@@ -118,7 +118,7 @@ class Fidget(object):
                 continue
 
             l.info('Patching stack of %s', func.name)
-            self.patch_function_stack(funcaddr, **kwargs)
+            self.patch_function_stack(funcaddr, has_return=func.has_return, **kwargs)
             if len(self._stack_patch_data) > last_size:
                 last_size = len(self._stack_patch_data)
                 successes += 1
@@ -129,12 +129,13 @@ class Fidget(object):
             l.info('Patched %d/%d functions', successes, totals)
 
 
-    def patch_function_stack(self, funcaddr, safe=False, largemode=False):
+    def patch_function_stack(self, funcaddr, has_return, safe=False, largemode=False):
         clrp = claripy.ClaripyStandalone('fidget_function_%x' % funcaddr)
         clrp.unique_names = False
         symrepr = clrp.solver()
         alloc_op = None   # the instruction that performs a stack allocation
         dealloc_ops = []  # the instructions that perform a stack deallocation
+        least_alloc = None # the smallest allocation known
         stack = Stack(self._binrepr, symrepr, 0)
         for tag, bindata in find_stack_tags(self._binrepr, symrepr, funcaddr):
             if tag == '':
@@ -144,15 +145,17 @@ class Fidget(object):
             l.debug('Got a tag at 0x%0.8x: %s: %#x', bindata.memaddr, tag, bindata.value)
 
             if tag == 'STACK_ALLOC':
-                if alloc_op is None:
+                if alloc_op is None or bindata.value < alloc_op.value:
                     alloc_op = bindata
-                elif bindata.value < alloc_op.value:
-                    alloc_op = bindata
-                stack.conc_size = -alloc_op.value
+                    stack.conc_size = -alloc_op.value
+                if least_alloc is None or bindata.value > least_alloc.value:
+                    least_alloc = bindata
             elif tag == 'STACK_DEALLOC':
                 if not bindata.symval.symbolic:
                     continue
                 dealloc_ops.append(bindata)
+                if least_alloc is None or bindata.value > least_alloc.value:
+                    least_alloc = bindata
             elif tag == 'STACK_ACCESS':
                 stack.access(bindata)
             else:
@@ -162,12 +165,16 @@ class Fidget(object):
             l.info('\tFunction does not appear to have a stack frame (No alloc)')
             return
 
-        if stack.conc_size <= 0:
-            l.error('\tFunction has invalid stack size of %#x', stack.conc_size)
+        if has_return and least_alloc.value != self._binrepr.angr.arch.bytes if self._binrepr.angr.arch.call_pushes_ret else 0:
+            l.info('\tFunction does not ever deallocate stack frame (Least alloc is %d for %s)', -least_alloc.value, self._binrepr.angr.arch.name)
             return
 
-        if len(dealloc_ops) == 0:
-            l.error('\tFunction does not ever deallocate stack frame')
+        if has_return and len(dealloc_ops) == 0:
+            l.error('\tFunction does not ever deallocate stack frame (No zero alloc)')
+            return
+
+        if stack.conc_size <= 0:
+            l.error('\tFunction has invalid stack size of %#x', stack.conc_size)
             return
 
     # Find the lowest sp-access that isn't an argument to the next function
