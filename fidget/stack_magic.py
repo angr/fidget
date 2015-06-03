@@ -66,7 +66,7 @@ class Variable(object):
         if self.special:
             return
 
-        self.unsafe_constraints.append(self.sym_addr < self.conc_addr)
+        #self.unsafe_constraints.append(self.sym_addr < self.conc_addr)
 
     def get_patches(self, symrepr):
         return sum((access.get_patches(symrepr) for access in self.accesses), [])
@@ -144,8 +144,13 @@ class Stack():
             elif next_var is None or next_var.special:
                 # If we're the last free-floating variable, set a solid bottom
                 self.symrepr.add(var.sym_addr <= var.conc_addr)
+                self.symrepr.add(var.sym_addr <= var.sym_addr + var.size)
+                self.symrepr.add(var.sym_addr + var.size <= next_var.sym_addr)
+                self.unsafe_constraints.append(var.sym_addr + var.size < next_var.sym_addr)
             else:
                 # Otherwise we're one of the free-floating variables
+                self.symrepr.add(var.sym_addr <= var.sym_addr + var.size)
+                self.unsafe_constraints.append(var.sym_addr + var.size < next_var.sym_addr)
                 if safe:
                     self.symrepr.add(var.sym_addr + var.size == next_var.sym_addr)
                 else:
