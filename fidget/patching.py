@@ -224,11 +224,13 @@ class Fidget(object):
         if largemode and not safe:
             symrepr.add(stack.sym_size <= stack.conc_size + (1024 * stack.num_vars + 2048))
             stack.unsafe_constraints.append(stack.sym_size >= stack.conc_size + (1024 * stack.num_vars))
-            stack.unsafe_constraints.append(stack.sym_size >= 0x70)
+            stack.unsafe_constraints.append(stack.sym_size >= 0x78)
+            stack.unsafe_constraints.append(stack.sym_size >= 0xF8)
         elif largemode and safe:
             symrepr.add(stack.sym_size <= stack.conc_size + 1024*16)
             stack.unsafe_constraints.append(stack.sym_size >= stack.conc_size + 1024*8)
-            stack.unsafe_constraints.append(stack.sym_size >= 0x70)
+            stack.unsafe_constraints.append(stack.sym_size >= 0x78)
+            stack.unsafe_constraints.append(stack.sym_size >= 0xF0)
         elif not largemode and safe:
             symrepr.add(stack.sym_size <= stack.conc_size + 256)
         elif not largemode and not safe:
