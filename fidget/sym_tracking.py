@@ -174,6 +174,12 @@ class BlockState:
         stackexp = ConstExpression(symrepr._claripy.BVV(0, binrepr.angr.arch.bits), 'Ity_I%d' % binrepr.angr.arch.bits, True)
         stackexp.stack_addr = True
         self.regs[self.binrepr.angr.arch.sp_offset] = stackexp
+        if binrepr.angr.arch.name == 'AMD64':
+            self.regs[144] = ConstExpression.default(symrepr._claripy, 'Ity_I64')
+            self.regs[156] = ConstExpression.default(symrepr._claripy, 'Ity_I64')
+        elif binrepr.angr.arch.name == 'X86':
+            self.regs[216] = ConstExpression.default(symrepr._claripy, 'Ity_I32')
+            self.regs[884] = ConstExpression.default(symrepr._claripy, 'ity_i32')
 
     def copy(self, newaddr):
         out = BlockState(self.binrepr, self.symrepr, newaddr)
@@ -213,7 +219,9 @@ class BlockState:
     def get_mem(self, addr, ty):
         if addr.stack_addr:
             if addr.cleanval in self.stack_cache:
-                return self.stack_cache[addr.cleanval]
+                val = self.stack_cache[addr.cleanval]
+                if val.type == ty:
+                    return val
             return ConstExpression.default(self.symrepr._claripy, ty)
         cleanestval = addr.cleanval.model.value
         if cleanestval in self.binrepr.angr.ld.memory and 'F' not in ty:    # TODO: support this
