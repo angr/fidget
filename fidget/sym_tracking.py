@@ -327,6 +327,8 @@ class SmartExpression:
                     self.deps.append(arg)
                 if vexpression.op.startswith('Iop_Mul') or vexpression.op.startswith('Iop_And'):
                     self.shield_constants(self.deps)
+                if vexpression.op == 'Iop_F64toI32S':
+                    self.shield_constants(self.deps, [1])
                 self.cleanval = operations[vexpression.op].calculate(self.symrepr._claripy, *(x.cleanval for x in self.deps))
                 self.dirtyval = operations[vexpression.op].calculate(self.symrepr._claripy, *(x.dirtyval for x in self.deps))
                 if vexpression.op.startswith('Iop_Add') or vexpression.op.startswith('Iop_And') or \
@@ -335,6 +337,8 @@ class SmartExpression:
                 elif vexpression.op.startswith('Iop_Sub'):
                     self.stack_addr = self.deps[0].stack_addr and not self.deps[1].stack_addr
             except SimOperationError:
+                if vexpression.op == 'Iop_F64toI32S':
+                    raise
                 l.exception("SimOperationError while running op '%s', returning null", vexpression.op)
                 self.is_concrete = False
             except KeyError:
