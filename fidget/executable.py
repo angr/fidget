@@ -28,7 +28,7 @@ class Executable(object):
             cfg_options = {}
         try:
             if not cache: raise IOError('fuck off')
-            fh = open(cfgname)
+            fh = open(cfgname, 'rb')
             self.angr, self.cfg = pickle.load(fh)
             fh.close()
         except (IOError, OSError, pickle.UnpicklingError):
@@ -36,7 +36,7 @@ class Executable(object):
             self.angr.arch.cache_irsb = False
             self.cfg = self.angr.analyses.CFG(**cfg_options) # pylint: disable=no-member
             try:
-                fh = open(cfgname, 'w')
+                fh = open(cfgname, 'wb')
                 pickle.dump((self.angr, self.cfg), fh)
                 fh.close()
             except (IOError, OSError, pickle.PicklingError):

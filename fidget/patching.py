@@ -27,8 +27,8 @@ class Fidget(object):
             outfile = self.infile + '.out'
         l.debug('Patching to %s', outfile)
 
-        fin = open(self.infile)
-        fout = open(tempfile, 'w')
+        fin = open(self.infile, 'rb')
+        fout = open(tempfile, 'wb')
 
         buf = 'a'
         while buf:
