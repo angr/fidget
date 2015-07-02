@@ -3,7 +3,7 @@
 import os
 import testinfo
 
-testloc = str(os.path.realpath(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../binaries/tests')))
+testloc = str(os.path.realpath(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../../binaries/tests')))
 
 arches = ['x86_64', 'i386', 'armel', 'ppc', 'ppc64', 'mips', 'mipsel']
 ctf_binaries = ['x86_64/ctf_shifty', 'i386/ctf_nuclear', 'ppc/ctf_deepblue']
