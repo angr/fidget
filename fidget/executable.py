@@ -34,7 +34,7 @@ class Executable(object):
         except (IOError, OSError, pickle.UnpicklingError):
             self.angr = Project(filename, load_options={'auto_load_libs': False})
             self.angr.arch.cache_irsb = False
-            self.cfg = self.angr.analyses.CFG(**cfg_options) # pylint: disable=no-member
+            self.cfg = self.angr.factory.analyses.CFG(**cfg_options) # pylint: disable=no-member
             try:
                 fh = open(cfgname, 'wb')
                 pickle.dump((self.angr, self.cfg), fh)
@@ -48,7 +48,7 @@ class Executable(object):
             raise FidgetUnsupportedError("Unsupported architecture " + self.angr.arch.name)
 
     def relocate_to_physaddr(self, address):
-        return self.angr.main_binary.addr_to_offset(address)
+        return self.angr.loader.main_bin.addr_to_offset(address)
 
     def make_irsb(self, byte_string, thumb=False):
         offset = 0
@@ -57,7 +57,7 @@ class Executable(object):
             addr += 1
             offset += 1
         bb = pyvex.IRSB(bytes=byte_string, arch=self.angr.arch, bytes_offset=offset, mem_addr=addr)
-        return self.angr.vexer._post_process(bb)
+        return self.angr.factory._lifter._post_process(bb)
 
     def resign_int(self, n, word_size=None):
         if word_size is None: word_size = self.native_word
@@ -86,4 +86,4 @@ class Executable(object):
         return self.angr.arch.memory_endness == 'Iend_LE'
 
     def read_memory(self, addr, size):
-        return ''.join(self.angr.ld.memory[addr + i] for i in xrange(size))
+        return ''.join(self.angr.loader.memory[addr + i] for i in xrange(size))

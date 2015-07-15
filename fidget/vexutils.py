@@ -1,9 +1,6 @@
-from angr.vexer import SerializableIRSB
 from pyvex import IRSB
 import claripy
 from .errors import FidgetUnsupportedError
-
-IRSBType = (IRSB, SerializableIRSB)
 
 # These are a giant mess of utility functions that are used in multiple spots.
 # A lot are only good to make dealing with comparisons between vex structs tolerable.
@@ -14,7 +11,7 @@ IRSBType = (IRSB, SerializableIRSB)
 # If all the tuples it yields have the same values, then they are equal
 
 def equals(item1, item2):
-    if not isinstance(item1, IRSBType) or not isinstance(item2, IRSBType):
+    if not isinstance(item1, IRSB) or not isinstance(item2, IRSB):
         yield (True, False)
         return
     queue = zip(item1.statements, item2.statements)
