@@ -63,7 +63,7 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
             continue
         l.debug("Analyzing block 0x%x", blockstate.addr)
         try:
-            block = binrepr.angr.block(blockstate.addr)
+            block = binrepr.angr.factory.block(blockstate.addr).vex
         except AngrMemoryError:
             continue
         imarks = [ s for s in block.statements if isinstance(s, pyvex.IRStmt.IMark) ]
@@ -78,7 +78,7 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
                 yield ("ABORT_HIT_OTHER_FUNCTION_HEAD", mark.addr)
                 return
             cache.add(mark.addr)
-            insnblock = binrepr.angr.block(mark.addr, max_size=mark.len, num_inst=1)
+            insnblock = binrepr.angr.factory.block(mark.addr, max_size=mark.len, num_inst=1).vex
             temps = TempStore(insnblock.tyenv)
             blockstate.load_tempstore(temps)
             stmtgen = enumerate(insnblock.statements)
@@ -262,9 +262,9 @@ class BlockState:
                     return val
             return ConstExpression.default(self.symrepr._claripy, ty)
         cleanestval = addr.cleanval.model.value
-        if cleanestval in self.binrepr.angr.ld.memory and 'F' not in ty:    # TODO: support this
+        if cleanestval in self.binrepr.angr.loader.memory and 'F' not in ty:    # TODO: support this
             size_bytes = vexutils.extract_int(ty)/8
-            strval = ''.join(self.binrepr.angr.ld.memory[cleanestval + i] for i in xrange(size_bytes))
+            strval = ''.join(self.binrepr.angr.loader.memory[cleanestval + i] for i in xrange(size_bytes))
             return ConstExpression(self.symrepr._claripy.BVV(self.binrepr.unpack_format(strval, size_bytes), size_bytes*8), ty, True)
         return ConstExpression.default(self.symrepr._claripy, ty)
 
