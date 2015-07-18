@@ -34,7 +34,7 @@ class Executable(object):
         except (IOError, OSError, pickle.UnpicklingError):
             self.angr = Project(filename, load_options={'auto_load_libs': False})
             self.angr.arch.cache_irsb = False
-            self.cfg = self.angr.factory.analyses.CFG(**cfg_options) # pylint: disable=no-member
+            self.cfg = self.angr.analyses.CFG(**cfg_options) # pylint: disable=no-member
             try:
                 fh = open(cfgname, 'wb')
                 pickle.dump((self.angr, self.cfg), fh)
