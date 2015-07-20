@@ -1,7 +1,8 @@
 # functions that provide the interface for messing with
 # binaries and stuff, via whatever tools.
 
-import struct
+import superstruct as struct
+import pickle
 
 from angr import Project
 import pyvex
@@ -12,32 +13,42 @@ import logging
 l = logging.getLogger('fidget.executable')
 
 #hopefully the only processors we should ever have to target
-processors = ['X86', 'AMD64', 'ARM', 'PPC32', 'MIPS32', 'PPC64']
+processors = ['X86', 'AMD64', 'ARMEL', 'ARMHF', 'PPC32', 'MIPS32', 'PPC64']
 
 class Executable(object):
-    def __init__(self, filename, debugangr=False):
+    def __init__(self, filename, cache=False, cfg_options=None, debugangr=False):
         l.info("Loading %s", filename)
         self.verbose = 0
         self.filename = filename
         if debugangr:
             import ipdb; ipdb.set_trace()
 
-        self.angr = Project(filename)
-        self.native_word = self.angr.arch.bits
-        self.cfg = self.angr.analyses.CFG()
-        self.funcman = self.cfg.function_manager
-        if self.angr.arch.name not in processors:
-            raise FidgetUnsupportedError("Unsupported archetecture " + self.angr.arch.name)
-        self.processor = processors.index(self.angr.arch.name)
+        cfgname = filename + '.fcfg'
+        if cfg_options is None:
+            cfg_options = {}
+        try:
+            if not cache: raise IOError('fuck off')
+            fh = open(cfgname, 'rb')
+            self.angr, self.cfg = pickle.load(fh)
+            fh.close()
+        except (IOError, OSError, pickle.UnpicklingError):
+            self.angr = Project(filename, load_options={'auto_load_libs': False})
+            self.angr.arch.cache_irsb = False
+            self.cfg = self.angr.analyses.CFG(**cfg_options) # pylint: disable=no-member
+            try:
+                fh = open(cfgname, 'wb')
+                pickle.dump((self.angr, self.cfg), fh)
+                fh.close()
+            except (IOError, OSError, pickle.PicklingError):
+                l.exception('Error pickling CFG')
 
-    def locate_physaddr(self, address):
-        return self.angr.main_binary.in_which_segment(address)
+        self.funcman = self.cfg.function_manager
+        self.native_word = self.angr.arch.bits
+        if self.angr.arch.name not in processors:
+            raise FidgetUnsupportedError("Unsupported architecture " + self.angr.arch.name)
 
     def relocate_to_physaddr(self, address):
-        return self.angr.main_binary.addr_to_offset(address)
-
-    def relocate_to_memaddr(self, address):
-        return self.angr.main_binary.offset_to_addr(address)
+        return self.angr.loader.main_bin.addr_to_offset(address)
 
     def make_irsb(self, byte_string, thumb=False):
         offset = 0
@@ -45,7 +56,8 @@ class Executable(object):
         if thumb:
             addr += 1
             offset += 1
-        return pyvex.IRSB(bytes=byte_string, arch=self.angr.arch.vex_arch, bytes_offset=offset, mem_addr=addr, endness=self.angr.arch.vex_endness)
+        bb = pyvex.IRSB(bytes=byte_string, arch=self.angr.arch, bytes_offset=offset, mem_addr=addr)
+        return self.angr.factory._lifter._post_process(bb)
 
     def resign_int(self, n, word_size=None):
         if word_size is None: word_size = self.native_word
@@ -62,28 +74,16 @@ class Executable(object):
             n += 1 << word_size
         return int(n)
 
-    def is_convention_stack_args(self):
-        return self.processor == 0
-
     def pack_format(self, val, size):
-        fmt = ('<' if self.is_little_endian() else '>') + {1: 'B', 2: 'H', 4: 'I', 8: 'Q'}[size]
+        fmt = ('<' if self.is_little_endian() else '>') + {1: 'B', 2: 'H', 4: 'I', 8: 'Q', 16: 'X', 32: 'Y', 64: 'Z'}[size]
         return struct.pack(fmt, val)
 
     def unpack_format(self, val, size):
-        fmt = ('<' if self.is_little_endian() else '>') + {1: 'B', 2: 'H', 4: 'I', 8: 'Q'}[size]
+        fmt = ('<' if self.is_little_endian() else '>') + {1: 'B', 2: 'H', 4: 'I', 8: 'Q', 16: 'X', 32: 'Y', 64: 'Z'}[size]
         return struct.unpack(fmt, val)[0]
-
-    def is_64_bit(self):
-        return self.angr.arch.bits == 64
 
     def is_little_endian(self):
         return self.angr.arch.memory_endness == 'Iend_LE'
 
-    def call_pushes_ret(self):
-        return self.processor in (0, 1)
-
-    def get_entry_point(self):
-        return self.angr.entry
-
     def read_memory(self, addr, size):
-        return ''.join(self.angr.ld.memory[addr + i] for i in xrange(size))
+        return ''.join(self.angr.loader.memory[addr + i] for i in xrange(size))

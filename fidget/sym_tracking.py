@@ -2,120 +2,199 @@
 # Basically stuff for tracking data flow through a basic block and generating tags for it
 
 from angr import AngrMemoryError
+import pyvex
+import claripy
 
 from .binary_data import BinaryData, BinaryDataConglomerate
 from .errors import FidgetError, FidgetUnsupportedError
 from . import vexutils
+from simuvex import operations, SimOperationError
 
 import logging
 l = logging.getLogger('fidget.sym_tracking')
 
+OK_CONTINUE_JUMPS = ('Ijk_FakeRet', 'Ijk_Boring', 'Ijk_FakeRet', 'Ijk_Sys_int128', 'Ijk_SigTRAP', 'Ijk_Sys_syscall')
+
+ROUNDING_IROPS = ('Iop_AddF64', 'Iop_SubF64', 'Iop_MulF64', 'Iop_DivF64',
+                  'Iop_AddF32', 'Iop_SubF32', 'Iop_MulF32', 'Iop_DivF32',
+                  'Iop_AddF128', 'Iop_SubF128', 'Iop_MulF128', 'Iop_DivF128',
+                  'Iop_AddF64r32', 'Iop_SubF64r32', 'Iop_MulF64r32', 'Iop_DivF64r32',
+                  'Iop_F64toI32S', 'Iop_SqrtF64', 'Iop_SqrtF32', 'Iop_SqrtF128',
+                  'Iop_F64toI16S', 'Iop_F64toI32S', 'Iop_F64toI64S', 'Iop_F64toI64U',
+                  'Iop_F64toI32U', 'Iop_I32StoF64', 'Iop_I64StoF64', 'Iop_I64UtoF64',
+                  'Iop_I64UtoF32', 'Iop_I32UtoF32', 'Iop_I32UtoF64', 'Iop_F32toI32S',
+                  'Iop_F32toI64S', 'Iop_F32toI32U', 'Iop_F32toI64U', 'Iop_I32StoF32',
+                  'Iop_I64StoF32', 'Iop_F64toF32'
+                  'Iop_F128toI32S', 'Iop_F128toI64S', 'Iop_F128toI32U', 'Iop_F128toI64U',
+                  'Iop_F128toF64', 'Iop_F128toF32'
+                  'Iop_AtanF64', 'Iop_Yl2xF64', 'Iop_Yl2xp1F64',
+                  'Iop_PRemF64', 'Iop_PRemC3210F64', 'Iop_PRem1F64', 'Iop_PRem1C3210F64',
+                  'Iop_ScaleF64', 'Iop_SinF64', 'Iop_CosF64', 'Iop_TanF64',
+                  'Iop_2xm1F64', 'Iop_RoundF64toInt', 'Iop_RoundF32toInt',
+                  'Iop_MAddF32', 'Iop_MSubF32', 'Iop_MAddF64', 'Iop_MSubF64',
+                  'Iop_MAddF64r32', 'Iop_MSubF64r32',
+                  'Iop_RoundF64toF32', 'Iop_RecpExpF64', 'Iop_RecpExpF64', 'Iop_RecpExpF32',
+                  'Iop_F64toF16', 'Iop_F32toF16',
+                  'Iop_AddD64', 'Iop_SubD64', 'Iop_MulD64', 'Iop_DivD64',
+                  'Iop_AddD128', 'Iop_SubD128', 'Iop_MulD128', 'Iop_DivD128',
+                  'Iop_D64toD32', 'Iop_D128toD64', 'Iop_I64StoD64', 'Iop_I64UtoD64',
+                  'Iop_D64toI32S', 'Iop_D64toI32U', 'Iop_D64toI64S', 'Iop_D64toI64U',
+                  'Iop_D128toI32S', 'Iop_D128toI32U', 'Iop_D128toI64S', 'Iop_D128toI64U',
+                  'Iop_F32toD32', 'Iop_F32toD64', 'Iop_F32toD128', 'Iop_F64toD32',
+                  'Iop_F64toD64', 'Iop_F64toD128', 'Iop_F128toD32', 'Iop_F128toD64',
+                  'Iop_F128toD128', 'Iop_D32toF32', 'Iop_D32toF64', 'Iop_D32toF128',
+                  'Iop_D64toF32', 'Iop_D64toF64', 'Iop_D64toF128', 'Iop_D128toF32',
+                  'Iop_D128toF64', 'Iop_D128toF128', 'Iop_RoundD64toInt',
+                  'Iop_RoundD128toInt', 'Iop_QuantizeD64' 'Iop_QuantizeD128',
+                  'Iop_SignificanceRoundD64', 'Iop_SignificanceRoundD128',
+                  'Iop_Add32Fx4', 'Iop_Sub32Fx4', 'Iop_Mul32Fx4', 'Iop_Div32Fx4',
+                  'Iop_Add64Fx2', 'Iop_Sub64Fx2', 'Iop_Mul64Fx2', 'Iop_Div64Fx2',
+                  'Iop_Add64Fx4', 'Iop_Sub64Fx4', 'Iop_Mul64Fx4', 'Iop_Div64Fx4',
+                  'Iop_Add32Fx8', 'Iop_Sub32Fx8', 'Iop_Mul32Fx8', 'Iop_Div32Fx8'
+                 )
+
 def find_stack_tags(binrepr, symrepr, funcaddr):
     queue = [BlockState(binrepr, symrepr, funcaddr)]
+    headcache = set()
     cache = set()
     while len(queue) > 0:
         blockstate = queue.pop(0)
-        if blockstate.addr in cache:
+        if blockstate.addr in headcache:
             continue
-        mark = None
-        pathindex = 0
-        block = binrepr.angr.block(blockstate.addr)
-        for stmt in block.statements:
-            if stmt.tag == 'Ist_IMark':
-                mark = stmt
-                cache.add(mark.addr)
-                pathindex = -1
-                #sys.stdout.flush()
-                #stmt.pp()
-                #print
-                continue
+        l.debug("Analyzing block 0x%x", blockstate.addr)
+        try:
+            block = binrepr.angr.factory.block(blockstate.addr).vex
+        except AngrMemoryError:
+            continue
+        imarks = [ s for s in block.statements if isinstance(s, pyvex.IRStmt.IMark) ]
+        if block.jumpkind == 'Ijk_NoDecode':
+            l.error("Block at %#x ends in NoDecode", blockstate.addr)
+            imarks = imarks[:-1]
+        headcache.add(imarks[0].addr)
+        # FIXME: This part might break for thumb
+        for mark in imarks:
+            if mark.addr != funcaddr and mark.addr in binrepr.funcman.functions:
+                l.warning("\tThis function jumps into another function (%#x). Abort.", mark.addr)
+                yield ("ABORT_HIT_OTHER_FUNCTION_HEAD", mark.addr)
+                return
+            cache.add(mark.addr)
+            insnblock = binrepr.angr.factory.block(mark.addr, max_size=mark.len, num_inst=1).vex
+            temps = TempStore(insnblock.tyenv)
+            blockstate.load_tempstore(temps)
+            stmtgen = enumerate(insnblock.statements)
+            for _, stmt in stmtgen:
+                if isinstance(stmt, pyvex.IRStmt.IMark): break
 
-            pathindex += 1
-            #import sys;
-            #sys.stdout.write('%.3d  ' % pathindex)
-            #stmt.pp()
-            #print
-            if stmt.tag in ('Ist_NoOp', 'Ist_AbiHint'):
-                pass
-
-            elif stmt.tag == 'Ist_Exit':
-                if stmt.jumpkind == 'Ijk_Boring':
-                    dest = SmartExpression(blockstate, stmt.dst, mark, [pathindex, 'dst'])
-                    try:
-                        queue.append(blockstate.copy(dest.cleanval))
-                    except AngrMemoryError:
-                        pass
-                else:
-                    l.warning('(%s) Not sure what to do with jumpkind %s', hex(mark.addr), stmt.jumpkind)
-
-            elif stmt.tag in ('Ist_WrTmp', 'Ist_Store', 'Ist_Put'):
-                this_expression = SmartExpression(blockstate, stmt.data, mark, [pathindex, 'data'])
-                blockstate.assign(stmt, this_expression, pathindex)
-
-            elif stmt.tag == 'Ist_LoadG':
-                # Conditional loads. Lots of bullshit.
-                this_expression = SmartExpression(blockstate, stmt.addr, mark, [pathindex, 'addr'])
-                blockstate.access(this_expression, 1)
-                tmp_size = vexutils.extract_int(block.tyenv.typeOf(stmt.dst))
-                this_expression.dirtyval = vexutils.ZExtTo(tmp_size, this_expression.dirtyval)
-                blockstate.temps[stmt.dst] = this_expression
-                SmartExpression(blockstate, stmt.guard, mark, [pathindex, 'guard'])
-                SmartExpression(blockstate, stmt.alt, mark, [pathindex, 'alt'])
-
-            elif stmt.tag == 'Ist_StoreG':
-                # Conditional store
-                addr_expr = SmartExpression(blockstate, stmt.addr, mark, [pathindex, 'addr'])
-                value_expr = SmartExpression(blockstate, stmt.data, mark, [pathindex, 'data'])
-                blockstate.access(addr_expr, 2)
-                if addr_expr.stack_addr:
-                    blockstate.stack_cache[addr_expr.cleanval] = value_expr
-                if value_expr.stack_addr:
-                    blockstate.access(value_expr, 4)
-
-                SmartExpression(blockstate, stmt.guard, mark, [pathindex, 'guard'])
-
-
-            else:
-                raise FidgetUnsupportedError("Unknown vex instruction???", stmt)
-
-        # The last argument is wrong but I dont't think it matters
-        if block.jumpkind == 'Ijk_Boring':
-            dest = SmartExpression(blockstate, block.next, mark, [pathindex, 'next'])
-            if dest.cleanval not in binrepr.angr.sim_procedures:
-                try:
-                    queue.append(blockstate.copy(dest.cleanval))
-                except AngrMemoryError:
+            for stmt_idx, stmt in stmtgen:
+                if stmt.tag in ('Ist_NoOp', 'Ist_AbiHint', 'Ist_MBE'):
                     pass
-        elif block.jumpkind in ('Ijk_Ret', 'Ijk_NoDecode'):
-            pass
-        elif block.jumpkind == 'Ijk_Call':
-            if binrepr.call_pushes_ret():
+
+                elif stmt.tag == 'Ist_Exit':
+                    SmartExpression(blockstate, stmt.dst, mark, [stmt_idx, 'dst'])
+                    # Let the cfg take care of control flow!
+
+                elif stmt.tag in ('Ist_WrTmp', 'Ist_Store', 'Ist_Put'):
+                    this_expression = SmartExpression(blockstate, stmt.data, mark, [stmt_idx, 'data'])
+                    blockstate.assign(stmt, this_expression, stmt_idx)
+
+                elif stmt.tag == 'Ist_LoadG':
+                    # Conditional loads. Lots of bullshit.
+                    this_expression = SmartExpression(blockstate, stmt.addr, mark, [stmt_idx, 'addr'])
+                    blockstate.access(this_expression, 1)
+                    tmp_size = temps.size_of(stmt.dst)
+                    temps.write(stmt.dst, vexutils.ZExtTo(tmp_size, this_expression.dirtyval))
+                    blockstate.temps[stmt.dst] = this_expression
+                    SmartExpression(blockstate, stmt.guard, mark, [stmt_idx, 'guard'])
+                    SmartExpression(blockstate, stmt.alt, mark, [stmt_idx, 'alt'])
+
+                elif stmt.tag == 'Ist_StoreG':
+                    # Conditional store
+                    addr_expr = SmartExpression(blockstate, stmt.addr, mark, [stmt_idx, 'addr'])
+                    value_expr = SmartExpression(blockstate, stmt.data, mark, [stmt_idx, 'data'])
+                    blockstate.access(addr_expr, 2)
+                    if addr_expr.stack_addr:
+                        blockstate.stack_cache[addr_expr.cleanval] = value_expr
+                    if value_expr.stack_addr:
+                        blockstate.access(value_expr, 4)
+                    SmartExpression(blockstate, stmt.guard, mark, [stmt_idx, 'guard'])
+
+                elif stmt.tag == 'Ist_PutI':    # haha no
+                    SmartExpression(blockstate, stmt.data, mark, [stmt_idx, 'data'])
+                elif stmt.tag == 'Ist_CAS':     # HA ha no
+                    if stmt.oldLo != 4294967295:
+                        blockstate.tempstore.default(stmt.oldLo, symrepr._claripy)
+                    if stmt.oldHi != 4294967295:
+                        blockstate.tempstore.default(stmt.oldHi, symrepr._claripy)
+                elif stmt.tag == 'Ist_Dirty':   # hahAHAHAH NO
+                    if stmt.tmp != 4294967295:
+                        blockstate.tempstore.default(stmt.tmp, symrepr._claripy)
+                else:
+                    raise FidgetUnsupportedError("Unknown vex instruction???", stmt)
+
+        if block.jumpkind == 'Ijk_Call' or block.jumpkind in OK_CONTINUE_JUMPS:
+            if block.jumpkind == 'Ijk_Call' and binrepr.angr.arch.call_pushes_ret:
                 # Pop the return address off the stack and keep going
-                stack = blockstate.get_reg(binrepr.angr.arch.sp_offset)
+                stack = blockstate.get_reg(binrepr.angr.arch.sp_offset, binrepr.angr.arch.bits)
                 popped = stack.deps[0] if stack.deps[0].stack_addr else stack.deps[1]
                 blockstate.regs[binrepr.angr.arch.sp_offset] = popped
                 # Discard the last two tags -- they'll be an alloc and an access for the call (the push and the retaddr)
                 blockstate.tags = blockstate.tags[:-2]
 
-            for simirsb, jumpkind in binrepr.cfg.get_successors_and_jumpkind(binrepr.cfg.get_any_irsb(blockstate.addr), False):
-                if jumpkind != 'Ijk_FakeRet':
-                    continue
-                try:
-                    queue.append(blockstate.copy(simirsb.addr))
-                except AngrMemoryError:
-                    pass
+            for context in binrepr.cfg.get_all_nodes(blockstate.addr):
+                for node, jumpkind in binrepr.cfg.get_successors_and_jumpkind( \
+                                        context, \
+                                        excluding_fakeret=False):
+                    if jumpkind not in OK_CONTINUE_JUMPS:
+                        continue
+                    elif node.addr in headcache:
+                        continue
+                    elif node.simprocedure_name is not None:
+                        continue
+                    elif node.addr in cache:
+                        for succ, jumpkind in binrepr.cfg.get_successors_and_jumpkind(node, excluding_fakeret=False):
+                            if jumpkind in OK_CONTINUE_JUMPS and succ.addr not in cache and succ.simprocedure_name is None:
+                                queue.append(blockstate.copy(succ.addr))
+                    else:
+                        queue.append(blockstate.copy(node.addr))
+
+        elif block.jumpkind in ('Ijk_Ret', 'Ijk_NoDecode'):
+            pass
         else:
-            raise FidgetError("({:#x}) Can't proceed from unknown jumpkind {!r}".format(mark.addr, block.jumpkind))
+            raise FidgetError("({:#x}) Can't proceed from unknown jumpkind {!r}".format(imarks[0].addr, block.jumpkind))
 
         blockstate.end()
         for tag in blockstate.tags:
             yield tag
 
+class TempStore(object):
+    def __init__(self, tyenv):
+        self.tyenv = tyenv
+        self.storage = {}
 
-class AccessType:       # enum, basically :P
-    def __init__(self):
-        pass
+    def read(self, tmp):
+        if tmp not in self.storage:
+            raise ValueError('Temp not assigned to yet')
+        else:
+            return self.storage[tmp]
 
+    def size_of(self, tmp):
+        if tmp >= len(self.tyenv.types):
+            raise ValueError('Temp not valid in curent env')
+        return vexutils.extract_int(self.tyenv.types[tmp])
+
+    def write(self, tmp, value):
+        if value.type != self.tyenv.types[tmp]:
+            raise ValueError('Invalid type!')
+        size = self.size_of(tmp)
+        value.cleanval = vexutils.ZExtTo(size, value.cleanval)
+        value.dirtyval = vexutils.ZExtTo(size, value.dirtyval)
+        self.storage[tmp] = value
+
+    def default(self, tmp, clrp):
+        val = ConstExpression.default(clrp, self.tyenv.types[tmp])
+        self.write(tmp, val)
+
+class AccessType:       # pylint: disable=no-init
     READ = 1
     WRITE = 2
     POINTER = 4
@@ -126,79 +205,94 @@ class BlockState:
         self.binrepr = binrepr
         self.symrepr = symrepr
         self.addr = addr
-        self.irsb = binrepr.angr.block(addr)
         self.regs = {}
-        self.temps = {}
         self.stack_cache = {}
         self.tags = []
-        stackexp = ConstExpression()
+        self.tempstore = None
+        stackexp = ConstExpression(symrepr._claripy.BVV(0, binrepr.angr.arch.bits), 'Ity_I%d' % binrepr.angr.arch.bits, True)
         stackexp.stack_addr = True
         self.regs[self.binrepr.angr.arch.sp_offset] = stackexp
-
-    def __str__(self):
-        return 'BlockState(binrepr, 0x%x)' % self.addr
-
-    def __repr__(self):
-        return str(self)
+        if binrepr.angr.arch.name == 'AMD64':
+            self.regs[144] = ConstExpression.default(symrepr._claripy, 'Ity_I64')
+            self.regs[156] = ConstExpression.default(symrepr._claripy, 'Ity_I64')
+        elif binrepr.angr.arch.name == 'X86':
+            self.regs[216] = ConstExpression.default(symrepr._claripy, 'Ity_I32')
+            self.regs[884] = ConstExpression.default(symrepr._claripy, 'ity_i32')
 
     def copy(self, newaddr):
         out = BlockState(self.binrepr, self.symrepr, newaddr)
-        s = self.binrepr.angr.arch.sp_offset
-        out.regs[s] = self.regs[s]
-        b = self.binrepr.angr.arch.bp_offset
-        if self.binrepr.processor == 3:
-            b = 140 # On PPC, make sure to copy over r31
-        elif self.binrepr.processor == 5:
-            b = 264 # Same for PPC64
-        if b in self.regs and self.regs[b].stack_addr:
-            out.regs[b] = self.regs[b]
+
+        # copy over all registers that hold pointers to the stack
+        for offset, val in self.regs.iteritems():
+            if val.stack_addr:
+                out.regs[offset] = val
         return out
 
-    def get_reg(self, regnum):
+    def load_tempstore(self, tempstore):
+        self.tempstore = tempstore
+
+    def get_reg(self, regnum, ty):
+        if isinstance(ty, (int, long)):
+            ty = 'Ity_I%d' % ty
+
         if not regnum in self.regs:
-            return ConstExpression()
-        return self.regs[regnum]
+            if 'F' in ty or vexutils.extract_int(ty) > self.binrepr.angr.arch.bits:
+                self.regs[regnum] = ConstExpression.default(self.symrepr._claripy, ty)
+            else:
+                self.regs[regnum] = ConstExpression.default(self.symrepr._claripy, 'Ity_I%d' % self.binrepr.angr.arch.bits)
+            return self.regs[regnum].truncate(ty)
+
+        if 'F' in self.regs[regnum].type:
+            if self.regs[regnum].type.split('_')[1] != ty.split('_')[1]:
+                l.warning("Don't know how to change type %s to %s, discarding", self.regs[regnum].type, ty)
+                self.regs[regnum] = ConstExpression.default(self.symrepr._claripy, ty)
+            return self.regs[regnum]
+        else:
+            return self.regs[regnum].truncate(ty)
+
 
     def get_tmp(self, tmpnum):
-        return self.temps[tmpnum]
+        return self.tempstore.read(tmpnum)
 
-    def get_mem(self, addr, size):
+    def get_mem(self, addr, ty):
         if addr.stack_addr:
             if addr.cleanval in self.stack_cache:
-                return self.stack_cache[addr.cleanval]
-            return ConstExpression()
-        if addr.cleanval in self.binrepr.angr.ld.memory:
-            strval = ''.join(self.binrepr.angr.ld.memory[addr.cleanval + i] for i in xrange(size))
-            return ConstExpression(self.binrepr.unpack_format(strval, size))
-        #physaddr = self.binrepr.relocate_to_physaddr(addr.cleanval)
-        #if physaddr is None:
-        #    return ConstExpression()
-        #self.binrepr.filestream.seek(physaddr)
-        #return ConstExpression(self.binrepr.unpack_format(self.binrepr.filestream.read(size), size))
-        return ConstExpression()
-
-    def set_ip(self, addr):
-        self.regs[self.binrepr.angr.arch.ip_offset] = ConstExpression(addr)
+                val = self.stack_cache[addr.cleanval]
+                if val.type == ty:
+                    return val
+            return ConstExpression.default(self.symrepr._claripy, ty)
+        cleanestval = addr.cleanval.model.value
+        if cleanestval in self.binrepr.angr.loader.memory and 'F' not in ty:    # TODO: support this
+            size_bytes = vexutils.extract_int(ty)/8
+            strval = ''.join(self.binrepr.angr.loader.memory[cleanestval + i] for i in xrange(size_bytes))
+            return ConstExpression(self.symrepr._claripy.BVV(self.binrepr.unpack_format(strval, size_bytes), size_bytes*8), ty, True)
+        return ConstExpression.default(self.symrepr._claripy, ty)
 
     def access(self, addr_expression, access_type):
         if not addr_expression.stack_addr:
             return
         self.tags.append(('STACK_ACCESS', addr_expression.make_bindata(access_type)))
 
-    def assign(self, vextatement, expression, line):
+    def assign(self, vextatement, expression, stmt_idx):
         if vextatement.tag == 'Ist_WrTmp':
-            size = vexutils.extract_int(self.irsb.tyenv.types[vextatement.tmp])
-            expression.dirtyval = vexutils.ZExtTo(size, expression.dirtyval)
-            self.temps[vextatement.tmp] = expression
+            self.tempstore.write(vextatement.tmp, expression)
         elif vextatement.tag == 'Ist_Put':
-            self.regs[vextatement.offset] = expression
+            if 'F' in expression.type or expression.size > self.binrepr.angr.arch.bits:
+                self.regs[vextatement.offset] = expression
+            else:
+                if not vextatement.offset in self.regs:
+                    self.regs[vextatement.offset] = ConstExpression.default(self.symrepr._claripy, 'Ity_I%d' % self.binrepr.angr.arch.bits)
+                self.regs[vextatement.offset] = expression.overwrite(self.regs[vextatement.offset])
             if vextatement.offset == self.binrepr.angr.arch.sp_offset:
-                if expression.cleanval == 0:
+                if not expression.is_concrete:
+                    l.warning("This function appears to use alloca(). Abort.")
+                    self.tags.append(('ABORT_ALLOCA', expression.make_bindata(0)))
+                elif expression.cleanval.model.value == 0:
                     self.tags.append(('STACK_DEALLOC', expression.make_bindata(0)))
                 else:
                     self.tags.append(('STACK_ALLOC', expression.make_bindata(0)))
         elif vextatement.tag == 'Ist_Store':
-            addr_expr = SmartExpression(self, vextatement.addr, expression.mark, [line, 'addr'])
+            addr_expr = SmartExpression(self, vextatement.addr, expression.mark, [stmt_idx, 'addr'])
             self.access(addr_expr, AccessType.WRITE)
             if addr_expr.stack_addr:
                 self.stack_cache[addr_expr.cleanval] = expression
@@ -219,172 +313,78 @@ class SmartExpression:
         self.path = path
         self.binrepr = self.blockstate.binrepr
         self.symrepr = self.blockstate.symrepr
-        self.cleanval = 0
-        self.dirtyval = 0
         self.deps = []
         self.stack_addr = False
+        self.is_concrete = False
         self.rootval = False
         self.bincache = [None]
+        self.size = vexpression.result_size if not vexpression.tag.startswith('Ico_') else vexpression.size
+        self.type = vexpression.result_type if not vexpression.tag.startswith('Ico_') else vexpression.type
+        self.cleanval = vexutils.make_default_value(self.symrepr._claripy, self.type)
+        self.dirtyval = vexutils.make_default_value(self.symrepr._claripy, self.type)
         if vexpression.tag == 'Iex_Get':
-            self.copy_to_self(blockstate.get_reg(vexpression.offset))
+            self.copy_to_self(blockstate.get_reg(vexpression.offset, self.type))
         elif vexpression.tag == 'Iex_RdTmp':
             self.copy_to_self(self.blockstate.get_tmp(vexpression.tmp))
         elif vexpression.tag == 'Iex_Load':
             addr_expression = SmartExpression(blockstate, vexpression.addr, mark, path + ['addr'])
             self.blockstate.access(addr_expression, AccessType.READ)
-            size = vexutils.extract_int(vexpression.type) / 8
-            self.copy_to_self(self.blockstate.get_mem(addr_expression, size))
+            self.copy_to_self(self.blockstate.get_mem(addr_expression, self.type))
         elif vexpression.tag == 'Iex_Const' or vexpression.tag.startswith('Ico_'):
             if vexpression.tag == 'Iex_Const':
                 vexpression = vexpression.con
-            size = vexutils.extract_int(vexpression.tag)
-            self.cleanval = self.binrepr.resign_int(vexpression.value, size)
-            self.dirtyval = self.symrepr._claripy.BitVec('%x_%d' % (mark.addr, path[0]), size)
+            if 'F' in self.type:
+                if self.size == 32:
+                    self.cleanval = self.symrepr._claripy.FPV(vexpression.value, claripy.FSORT_FLOAT)
+                    self.dirtyval = self.symrepr._claripy.FP('%x_%d' % (mark.addr, path[0]), claripy.FSORT_FLOAT)
+                elif self.size == 64:
+                    self.cleanval = self.symrepr._claripy.FPV(vexpression.value, claripy.FSORT_DOUBLE)
+                    self.dirtyval = self.symrepr._claripy.FP('%x_%d' % (mark.addr, path[0]), claripy.FSORT_DOUBLE)
+                else:
+                    raise FidgetUnsupportedError("Why is there a FP const of size %d" % self.size)
+            else:
+                self.cleanval = self.symrepr._claripy.BVV(vexpression.value, self.size)
+                self.dirtyval = self.symrepr._claripy.BV('%x_%d' % (mark.addr, path[0]), self.size)
             self.rootval = True
-        elif vexpression.tag.startswith('Ico'):
-            if vexpression.tag == 'Iex_Const':
-                vexpression = vexpression.con
-            size = vexutils.extract_int(vexpression.tag)
-            self.cleanval = self.binrepr.resign_int(vexpression.value, size)
-            self.dirtyval = self.symrepr._claripy.BitVec('%x_%d' % (mark.addr, path[0]), size)
-            self.rootval = True
+            self.is_concrete = True
         elif vexpression.tag == 'Iex_ITE':
             false_expr = SmartExpression(blockstate, vexpression.iffalse, mark, path + ['iffalse'])
             truth_expr = SmartExpression(blockstate, vexpression.iftrue, mark, path + ['iftrue'])
-
             if truth_expr.stack_addr:
                 self.copy_to_self(truth_expr)
             else:
                 self.copy_to_self(false_expr)
-            SmartExpression(blockstate, vexpression.cond, mark, path + ['cond'])
+            cond_expr = SmartExpression(blockstate, vexpression.cond, mark, path + ['cond'])
+            self.is_concrete = false_expr.is_concrete and truth_expr.is_concrete and cond_expr.is_concrete
         elif vexpression.tag in ('Iex_Unop','Iex_Binop','Iex_Triop','Iex_Qop'):
-            for i, expr in enumerate(vexpression.args):
-                self.deps.append(SmartExpression(blockstate, expr, mark, path + ['args', i]))
-            opsize = vexutils.extract_int(vexpression.op)
-            if vexpression.op.endswith('to1'):
-                if self.deps[0].cleanval != 0:
-                    self.cleanval = 1
-                self.dirtyval = 0 # TODO: ????
-            elif vexpression.op.startswith('Iop_Not'):
-                self.cleanval = self.deps[0].cleanval ^ ((1 << opsize) - 1)
-                self.dirtyval = ~self.deps[0].dirtyval
-            elif vexpression.op.startswith('Iop_Sub'):
-                self.cleanval = self.deps[0].cleanval - self.deps[1].cleanval
-                self.dirtyval = self.deps[0].dirtyval - self.deps[1].dirtyval
-                self.stack_addr = self.deps[0].stack_addr and not self.deps[1].stack_addr
-            elif vexpression.op.startswith('Iop_Add'):
-                self.cleanval = self.deps[0].cleanval + self.deps[1].cleanval
-                self.dirtyval = self.deps[0].dirtyval + self.deps[1].dirtyval
-                self.stack_addr = self.deps[0].stack_addr or self.deps[1].stack_addr
-            elif vexpression.op.startswith('Iop_Mul'):
-                self.shield_constants(self.deps)
-                self.cleanval = self.deps[0].cleanval * self.deps[1].cleanval
-                self.dirtyval = self.deps[0].dirtyval * self.deps[1].dirtyval
-            elif vexpression.op.startswith('Iop_Div'):
-                self.cleanval = self.deps[0].cleanval * self.deps[1].cleanval
-                self.dirtyval = self.deps[0].dirtyval * self.deps[1].dirtyval
-            elif vexpression.op.startswith('Iop_And'):
-                self.shield_constants(self.deps)
-                self.cleanval = self.deps[0].cleanval & self.deps[1].cleanval
-                self.dirtyval = self.deps[0].dirtyval & self.deps[1].dirtyval
-                self.stack_addr = self.deps[0].stack_addr or self.deps[1].stack_addr
-            elif vexpression.op.startswith('Iop_Or'):
-                self.cleanval = self.deps[0].cleanval | self.deps[1].cleanval
-                self.dirtyval = self.deps[0].dirtyval | self.deps[1].dirtyval
-                self.stack_addr = self.deps[0].stack_addr or self.deps[1].stack_addr
-            elif vexpression.op.startswith('Iop_Xor'):
-                self.cleanval = self.deps[0].cleanval ^ self.deps[1].cleanval
-                self.dirtyval = self.deps[0].dirtyval ^ self.deps[1].dirtyval
-                self.stack_addr = self.deps[0].stack_addr or self.deps[1].stack_addr
-            elif vexpression.op.startswith('Iop_Shl'):
-                self.cleanval = self.deps[0].cleanval << self.deps[1].cleanval
-                self.dirtyval = self.deps[0].dirtyval << vexutils.ZExtTo(opsize, self.deps[1].dirtyval)
-            elif vexpression.op.startswith('Iop_Sar'):
-                self.cleanval = self.deps[0].cleanval << self.deps[1].cleanval
-                self.dirtyval = self.deps[0].dirtyval << vexutils.ZExtTo(opsize, self.deps[1].dirtyval)
-            elif vexpression.op.startswith('Iop_Shr'):
-                self.cleanval = self.deps[0].cleanval << self.deps[1].cleanval
-                if type(self.deps[0].dirtyval) in (int, long) or type(self.deps[1].dirtyval) in (int, long):
-                    self.dirtyval = self.deps[0].dirtyval << self.deps[1].dirtyval
-                else:
-                    self.dirtyval = self.symrepr._claripy.LShR(self.deps[0].dirtyval, vexutils.ZExtTo(opsize, self.deps[1].dirtyval))
-            elif vexpression.op in ('Iop_1Uto64', 'Iop_1Uto32', 'Iop_1Uto16', 'Iop_1Uto8'):
-                pass # Why does this even
-            elif vexpression.op in ('Iop_128to8', 'Iop_64to8', 'Iop_32to8', 'Iop_16to8'):
-                self.cleanval = self.deps[0].cleanval
-                self.dirtyval = vexutils.ZExtTo(8, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_8Sto16',):
-                self.cleanval = self.deps[0].cleanval
-                self.dirtyval = vexutils.SExtTo(16, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_128to16', 'Iop_64to16', 'Iop_32to16', 'Iop_8Uto16'):
-                self.cleanval = self.deps[0].cleanval
-                self.dirtyval = vexutils.ZExtTo(16, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_16Sto32', 'Iop_8Sto32'):
-                self.cleanval = self.deps[0].cleanval
-                self.dirtyval = vexutils.SExtTo(32, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_128to32', 'Iop_64to32', 'Iop_16Uto32', 'Iop_8Uto32'):
-                self.cleanval = self.deps[0].cleanval
-                self.dirtyval = vexutils.ZExtTo(32, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_32Sto64', 'Iop_16Sto64', 'Iop_8Sto64'):
-                self.cleanval = self.deps[0].cleanval
-                self.dirtyval = vexutils.SExtTo(64, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_128to64', 'Iop_32Uto64', 'Iop_16Uto64', 'Iop_8Uto64'):
-                self.cleanval = self.deps[0].cleanval
-                self.dirtyval = vexutils.ZExtTo(64, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_64Sto128', 'Iop_32Sto128', 'Iop_16Sto128', 'Iop_8Sto128'):
-                self.cleanval = self.deps[0].cleanval
-                self.dirtyval = vexutils.SExtTo(128, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_64Uto128', 'Iop_32Uto128', 'Iop_16Uto128', 'Iop_8Uto128'):
-                self.cleanval = self.deps[0].cleanval
-                self.dirtyval = vexutils.ZExtTo(128, self.deps[0].dirtyval)
-            elif vexpression.op in ('Iop_16HIto8',):
-                self.cleanval = self.deps[0].cleanval >> 8
-                self.dirtyval = self.deps[0].dirtyval >> 8 if type(self.deps[0].dirtyval) in (int, long) else self.deps[0].dirtyval[15:8]
-            elif vexpression.op in ('Iop_32HIto16',):
-                self.cleanval = self.deps[0].cleanval >> 16
-                self.dirtyval = self.deps[0].dirtyval >> 16 if type(self.deps[0].dirtyval) in (int, long) else self.deps[0].dirtyval[31:16]
-            elif vexpression.op in ('Iop_64HIto32',):
-                self.cleanval = self.deps[0].cleanval >> 32
-                self.dirtyval = self.deps[0].dirtyval >> 32 if type(self.deps[0].dirtyval) in (int, long) else self.deps[0].dirtyval[63:32]
-            elif vexpression.op in ('Iop_128HIto64',):
-                self.cleanval = self.deps[0].cleanval >> 64
-                self.dirtyval = self.deps[0].dirtyval >> 64 if type(self.deps[0].dirtyval) in (int, long) else self.deps[0].dirtyval[127:64]
-            elif vexpression.op == 'Iop_32HLto64':
-                self.cleanval = (self.deps[0].cleanval << 32) | self.deps[1].cleanval
-                a1 = vexutils.ZExtTo(64, self.deps[0].dirtyval)
-                a2 = vexutils.ZExtTo(64, self.deps[1].dirtyval)
-                self.dirtyval = (a1 << 32) | a2
-            elif vexpression.op == 'Iop_64HLto128':
-                self.cleanval = (self.deps[0].cleanval << 64) | self.deps[1].cleanval
-                a1 = vexutils.ZExtTo(128, self.deps[0].dirtyval)
-                a2 = vexutils.ZExtTo(128, self.deps[1].dirtyval)
-                self.dirtyval = (a1 << 64) | a2
-            elif 'Cmp' in vexpression.op:
-                self.cleanval = 0
-                self.dirtyval = 0
-                self.deps = []
-            elif vexpression.op.startswith('Iop_Clz'):
-                self.cleanval = 0
-                tmp_clean = self.deps[0].cleanval
-                for _ in xrange(opsize):
-                    tmp_clean <<= 1
-                    if tmp_clean >= (1 << opsize):
-                        break
-                    self.cleanval += 1
-                self.dirtyval = 0 # Nope, fuck this
-            elif vexpression.op.startswith('Iop_Ctz'):
-                self.cleanval = 0
-                tmp_clean = self.deps[0].cleanval
-                for _ in xrange(opsize):
-                    if tmp_clean % 2 == 1:
-                        break
-                    tmp_clean >>= 1
-                    self.cleanval += 1
-                self.dirtyval = 0 # Again with the Fucking of This
-
-            else:
-                raise FidgetUnsupportedError('Unknown operator ({:#x}): {!r}'.format(mark.addr, vexpression.op))
+            try:
+                self.is_concrete = True
+                for i, expr in enumerate(vexpression.args):
+                    arg = SmartExpression(blockstate, expr, mark, path + ['args', i])
+                    self.is_concrete = self.is_concrete and arg.is_concrete
+                    self.deps.append(arg)
+                if vexpression.op.startswith('Iop_Mul') or vexpression.op.startswith('Iop_And'):
+                    self.shield_constants(self.deps)
+                if vexpression.op in ROUNDING_IROPS:
+                    self.shield_constants(self.deps, whitelist=[0])
+                self.cleanval = operations[vexpression.op].calculate(self.symrepr._claripy, *(x.cleanval for x in self.deps))
+                self.dirtyval = operations[vexpression.op].calculate(self.symrepr._claripy, *(x.dirtyval for x in self.deps))
+                if vexpression.op.startswith('Iop_Add') or vexpression.op.startswith('Iop_And') or \
+                   vexpression.op.startswith('Iop_Or') or vexpression.op.startswith('Iop_Xor'):
+                    self.stack_addr = self.deps[0].stack_addr or self.deps[1].stack_addr
+                elif vexpression.op.startswith('Iop_Sub'):
+                    self.stack_addr = self.deps[0].stack_addr and not self.deps[1].stack_addr
+            except SimOperationError:
+                if vexpression.op == 'Iop_F64toI32S':
+                    raise
+                l.exception("SimOperationError while running op '%s', returning null", vexpression.op)
+                self.is_concrete = False
+            except KeyError:
+                l.error("Unsupported operation '%s', returning null", vexpression.op)
+                self.is_concrete = False
         elif vexpression.tag == 'Iex_CCall':
+            pass
+        elif vexpression.tag == 'Iex_GetI':
             pass
         else:
             raise FidgetUnsupportedError('Unknown expression tag ({:#x}): {!r}'.format(mark.addr, vexpression.tag))
@@ -396,16 +396,16 @@ class SmartExpression:
         self.deps = other.deps
         self.bincache = other.bincache
         self.stack_addr = other.stack_addr
+        self.is_concrete = other.is_concrete
         self.rootval = other.rootval
         self.path = other.path
 
     @staticmethod
-    def shield_constants(expr_list, exception_list=None):
-        exception_list = exception_list if exception_list is not None else []
+    def shield_constants(expr_list, whitelist=None):
         for i, expr in enumerate(expr_list):
-            if i in exception_list: continue
+            if whitelist is not None and i not in whitelist: continue
             if expr.rootval:
-                expr_list[i] = ConstExpression(expr.cleanval)
+                expr_list[i] = ConstExpression(expr.cleanval, expr.type, expr.is_concrete)
 
     def make_bindata(self, flags=None):
         if self.bincache[0] is not None and flags is None:
@@ -413,7 +413,7 @@ class SmartExpression:
         elif self.bincache[0] is None:
             if self.rootval:
                 self.bincache[0] = [BinaryData(self.mark, self.path + ['con', 'value'], \
-                        self.cleanval, self.dirtyval, self.binrepr, self.symrepr)]
+                        self.cleanval.model.signed, self.dirtyval, self.binrepr, self.symrepr)]
                 return self.bincache[0]
 
             self.bincache[0] = sum(map(lambda x: x.make_bindata(), self.deps), [])
@@ -421,20 +421,78 @@ class SmartExpression:
         if flags is None:
             return self.bincache[0]
         else:
-            acc = BinaryDataConglomerate(self.cleanval, self.dirtyval, flags)
+            acc = BinaryDataConglomerate(self.cleanval.model.signed, self.dirtyval, flags)
             acc.dependencies = self.bincache[0]
             acc.memaddr = self.mark.addr
             return acc
 
+    def overwrite(self, other):
+        if self.size > other.size:
+            l.warning("Overwriting a SmartExpression with a larger SmartExpression. Are you SURE you know what you're doing?")
+            return self
+        if self.size == other.size:
+            return self
+        smaller = self
+        larger = other
+        out = CustomExpression()
+        out.deps = [smaller, larger]
+        out.size = larger.size
+        out.type = larger.type
+        out.blockstate = smaller.blockstate
+        out.mark = smaller.mark # ??? what will be done with this
+        out.path = smaller.path
+        out.binrepr = out.blockstate.binrepr
+        out.symrepr = out.blockstate.symrepr
+        out.stack_addr = larger.stack_addr # sketchy...
+        out.is_concrete = smaller.is_concrete and larger.is_concrete
+        out.rootval = False
+        out.bincache = [None]
+        out.cleanval = out.symrepr._claripy.Concat(larger.cleanval[larger.size-1:smaller.size], smaller.cleanval)
+        out.dirtyval = out.symrepr._claripy.Concat(larger.dirtyval[larger.size-1:smaller.size], smaller.dirtyval)
+        return out
+
+    def truncate(self, ty):
+        if ty == self.type:
+            return self
+        if 'F' in self.type:
+            raise ValueError("Cannot coerce floating point values")
+        size_bits = vexutils.extract_int(ty)
+        if size_bits > self.size:
+            l.error("Attempting to truncate SmartExpression of size %d to size %d", self.size, size_bits)
+            return self
+        out = CustomExpression()
+        out.deps = [self]
+        out.size = size_bits
+        out.type = ty
+        out.blockstate = self.blockstate
+        out.mark = self.mark # ??? what will be done with this
+        out.path = self.path
+        out.binrepr = out.blockstate.binrepr
+        out.symrepr = out.blockstate.symrepr
+        out.stack_addr = False
+        out.is_concrete = self.is_concrete
+        out.rootval = False
+        out.bincache = [None]
+        out.cleanval = self.cleanval[size_bits-1:0]
+        out.dirtyval = self.dirtyval[size_bits-1:0]
+        return out
+
     def __str__(self):
         return 'Expression at 0x%x stmt %d' % (self.mark.addr, self.path[0])
 
-class ConstExpression:
-    def __init__(self, val=0):
+class CustomExpression(SmartExpression):
+    def __init__(self): # pylint: disable=super-init-not-called
+        pass
+
+class ConstExpression(object):
+    def __init__(self, val, ty, is_concrete):
+        self.size = val.size()
+        self.type = ty
         self.cleanval = val
         self.dirtyval = val
         self.deps = []
         self.stack_addr = False
+        self.is_concrete = is_concrete
         self.bincache = [None]
         self.rootval = False
         self.mark = None
@@ -443,3 +501,18 @@ class ConstExpression:
     @staticmethod
     def make_bindata():
         return []
+
+    def truncate(self, ty):
+        if ty == self.type:
+            return self
+        if 'F' in self.type:
+            raise ValueError("Cannot coerce floating point values")
+        size_bits = vexutils.extract_int(ty)
+        if size_bits > self.size:
+            l.error("Attempting to truncate SmartExpression of size %d to size %d", self.size, size_bits)
+            return self
+        return ConstExpression(self.cleanval[size_bits-1:0], ty, self.is_concrete)
+
+    @staticmethod
+    def default(clrp, ty):
+        return ConstExpression(vexutils.make_default_value(clrp, ty), ty, False)

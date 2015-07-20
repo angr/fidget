@@ -5,6 +5,8 @@ import ipdb
 import logging
 from fidget import patch_file       # pylint: disable=import-self
 
+l = logging.getLogger('fidget')
+
 def addopt(options, option, argv):
     if option in ('v', 'verbose'):
         options['logging']['fidget'] -= 10
@@ -15,8 +17,12 @@ def addopt(options, option, argv):
         sys.exit(0)
     elif option in ('safe',):
         options['safe'] = True
+    elif option in ('huge',):
+        options['largemode'] = True
     elif option in ('o', 'output'):
         options['outfiles'].append(next(argv))
+    elif option in ('in-place',):
+        options['inplace'] = True
     elif option in ('w',):
         options['whitelist'].append(next(argv))
     elif option in ('b',):
@@ -25,6 +31,8 @@ def addopt(options, option, argv):
         options['debug'] = True
     elif option in ('debugangr',):
         options['debugangr'] = True
+    elif option in ('cache',):
+        options['cache'] = True
     elif option in ('l', 'log'):
         tag = next(argv)
         lvl = next(argv)
@@ -50,11 +58,14 @@ Options:
     -v, --verbose           More output
     -q, --quiet             Less output
     -o, --output [file]     Output patched binary to file (default <input>.out)
+    --in-place              Changed default output file to <input> instead of <input>.out
     -w [function]           Whitelist a function name
     -b [function]           Blacklist a function name
     --safe                  Make conservative modifications
+    --huge                  Make stack frames gigantic
     --debug                 Pop an ipdb shell at the main function, break on exceptions
     --debugangr             Pop an ipdb shell right before calling into angr
+    --cache                 Use a pickled Project and CFG from a file
     -l, --log [tag] [level] Change logging levels
     --logfile [file]        Log output to a file
     -e, --exit-on-error     Exits at first error instead of trying more files"""
@@ -189,14 +200,15 @@ class PrettyFormatter(logging.Formatter):
         out += CanonColors.colored_level(record.levelno)
         out += record.getMessage()
         if record.exc_info:
-            traceback.print_exception(*record.exc_info)
+            out += '\n'
+            out += ''.join(traceback.format_exception(*record.exc_info))
         return out
 
 def main():
     if len(sys.argv) < 2:
         usage(False)
     else:
-        options = {"logging": {"fidget": 20, "angr": 'WARNING', "simuvex": 'WARNING', "cle": 'WARNING', "claripy": 'ERROR'}, "logfile": None, "safe": False, "infiles": [], "outfiles": [], "whitelist": [], "blacklist": [], "debug": False, 'debugangr': False, "exit-on-error": False}
+        options = {"logging": {"fidget": 20, "angr": 'WARNING', "simuvex": 'WARNING', "cle": 'WARNING', "claripy": 'ERROR'}, "logfile": None, "safe": False, "largemode": False, "infiles": [], "outfiles": [], "whitelist": [], "blacklist": [], "debug": False, 'debugangr': False, "exit-on-error": False, "inplace": False, "cache": False}
         argv = iter(sys.argv)
         next(argv)
         for arg in argv:
@@ -224,25 +236,33 @@ def main():
         else:
             handler = logging.FileHandler(logfile)
         handler.setFormatter(formatter)
+        logging.root.addHandler(handler)
 
         for tag, lvl in logopt.iteritems():
-            logger = logging.getLogger(tag)
-            logger.setLevel(lvl)
-            logger.addHandler(handler)
+            logging.getLogger(tag).setLevel(lvl)
 
         exit_on_error = options.pop('exit-on-error')
         debug = options.pop('debug')
+        debugangr = options.pop('debugangr')
+        inplace = options.pop('inplace')
+        cache = options.pop('cache')
 
         outfiles = options.pop('outfiles')
         infiles = options.pop('infiles')
         outfiles += [None] * (len(infiles) - len(outfiles))
         for infile, outfile in zip(infiles, outfiles):
+            if outfile is None:
+                outfile = infile if inplace else (infile + '.out')
             try:
                 if debug:
                     ipdb.set_trace()
-                patch_file(infile, outfile, **options)
-            except (Exception, KeyboardInterrupt):              # pylint: disable=broad-except
-                traceback.print_exc()
+                patch_file(infile, outfile, {'Fidget': {'debugangr': debugangr, 'cache': cache}, 'stacks': options})
+            except KeyboardInterrupt:
+                if debug:
+                    ipdb.post_mortem(sys.exc_info()[2])
+                sys.exit(1)
+            except Exception:              # pylint: disable=broad-except
+                l.exception("Unhandled Exception in Fidget!")
                 if debug:
                     ipdb.post_mortem(sys.exc_info()[2])
                 if exit_on_error:
