@@ -59,26 +59,32 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
     cache = set()
     while len(queue) > 0:
         blockstate = queue.pop(0)
-        if blockstate.addr in headcache:
+        if blockstate.oddaddr in headcache:
             continue
         l.debug("Analyzing block 0x%x", blockstate.addr)
+
         try:
-            block = binrepr.angr.factory.block(blockstate.addr).vex
+            block = blockstate.lift()
         except AngrMemoryError:
             continue
+
         imarks = [ s for s in block.statements if isinstance(s, pyvex.IRStmt.IMark) ]
         if block.jumpkind == 'Ijk_NoDecode':
             l.error("Block at %#x ends in NoDecode", blockstate.addr)
             imarks = imarks[:-1]
-        headcache.add(imarks[0].addr)
-        # FIXME: This part might break for thumb
+        headcache.add(blockstate.oddaddr)
+
         for mark in imarks:
-            if mark.addr != funcaddr and mark.addr in binrepr.funcman.functions:
+            if (mark.addr != funcaddr and mark.addr in binrepr.funcman.functions) or \
+                  (blockstate.thumb and mark.addr + 1 != funcaddr and mark.addr + 1 in binrepr.funcman.functions):
                 l.warning("\tThis function jumps into another function (%#x). Abort.", mark.addr)
                 yield ("ABORT_HIT_OTHER_FUNCTION_HEAD", mark.addr)
                 return
             cache.add(mark.addr)
-            insnblock = binrepr.angr.factory.block(mark.addr, max_size=mark.len, num_inst=1).vex
+            if blockstate.thumb:
+                cache.add(mark.addr + 1)
+
+            insnblock = blockstate.lift(mark.addr, max_size=mark.len)
             temps = TempStore(insnblock.tyenv)
             blockstate.load_tempstore(temps)
             stmtgen = enumerate(insnblock.statements)
@@ -99,11 +105,25 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
 
                 elif stmt.tag == 'Ist_LoadG':
                     # Conditional loads. Lots of bullshit.
-                    this_expression = SmartExpression(blockstate, stmt.addr, mark, [stmt_idx, 'addr'])
-                    blockstate.access(this_expression, 1)
-                    tmp_size = temps.size_of(stmt.dst)
-                    temps.write(stmt.dst, vexutils.ZExtTo(tmp_size, this_expression.dirtyval))
-                    blockstate.temps[stmt.dst] = this_expression
+                    addr_expression = SmartExpression(blockstate, stmt.addr, mark, [stmt_idx, 'addr'])
+                    blockstate.access(addr_expression, AccessType.READ)
+
+                    # load the actual data
+                    data_expression = blockstate.get_mem(addr_expression, stmt.cvt_types[0])
+                    # it then needs a type conversion applied to it
+                    cvt_data_expression = CustomExpression()
+                    cvt_data_expression.copy_to_self(data_expression)
+                    cvt_data_expression.type = stmt.cvt_types[1]
+                    conv_diff = vexutils.extract_int(stmt.cvt_types[1]) - vexutils.extract_int(stmt.cvt_types[0])
+                    if conv_diff != 0:
+                        if 'S' in stmt.cvt:
+                            cvt_data_expression.cleanval = cvt_data_expression.cleanval.sign_extend(conv_diff)
+                            cvt_data_expression.dirtyval = cvt_data_expression.dirtyval.sign_extend(conv_diff)
+                        else:
+                            cvt_data_expression.cleanval = cvt_data_expression.cleanval.zero_extend(conv_diff)
+                            cvt_data_expression.dirtyval = cvt_data_expression.dirtyval.zero_extend(conv_diff)
+
+                    temps.write(stmt.dst, cvt_data_expression)
                     SmartExpression(blockstate, stmt.guard, mark, [stmt_idx, 'guard'])
                     SmartExpression(blockstate, stmt.alt, mark, [stmt_idx, 'alt'])
 
@@ -111,11 +131,12 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
                     # Conditional store
                     addr_expr = SmartExpression(blockstate, stmt.addr, mark, [stmt_idx, 'addr'])
                     value_expr = SmartExpression(blockstate, stmt.data, mark, [stmt_idx, 'data'])
-                    blockstate.access(addr_expr, 2)
+                    blockstate.access(addr_expr, AccessType.WRITE)
                     if addr_expr.stack_addr:
                         blockstate.stack_cache[addr_expr.cleanval] = value_expr
                     if value_expr.stack_addr:
-                        blockstate.access(value_expr, 4)
+                        blockstate.access(value_expr, AccessType.POINTER)
+
                     SmartExpression(blockstate, stmt.guard, mark, [stmt_idx, 'guard'])
 
                 elif stmt.tag == 'Ist_PutI':    # haha no
@@ -137,10 +158,11 @@ def find_stack_tags(binrepr, symrepr, funcaddr):
                 stack = blockstate.get_reg(binrepr.angr.arch.sp_offset, binrepr.angr.arch.bits)
                 popped = stack.deps[0] if stack.deps[0].stack_addr else stack.deps[1]
                 blockstate.regs[binrepr.angr.arch.sp_offset] = popped
-                # Discard the last two tags -- they'll be an alloc and an access for the call (the push and the retaddr)
+                # Discard the last two tags -- they'll be an alloc and an access for the call
+                # (the push and the retaddr)
                 blockstate.tags = blockstate.tags[:-2]
 
-            for context in binrepr.cfg.get_all_nodes(blockstate.addr):
+            for context in binrepr.cfg.get_all_nodes(blockstate.oddaddr):
                 for node, jumpkind in binrepr.cfg.get_successors_and_jumpkind( \
                                         context, \
                                         excluding_fakeret=False):
@@ -202,9 +224,12 @@ class AccessType:       # pylint: disable=no-init
 
 class BlockState:
     def __init__(self, binrepr, symrepr, addr):
+        self.oddaddr = addr
         self.binrepr = binrepr
         self.symrepr = symrepr
-        self.addr = addr
+        self.thumb = binrepr.cfg.is_thumb_addr(addr) or \
+                (binrepr.angr.arch.name.startswith('ARM') and addr & 1 == 1)
+        self.addr = addr & ~1 if self.thumb else addr
         self.regs = {}
         self.stack_cache = {}
         self.tags = []
@@ -217,7 +242,10 @@ class BlockState:
             self.regs[156] = ConstExpression.default(symrepr._claripy, 'Ity_I64')
         elif binrepr.angr.arch.name == 'X86':
             self.regs[216] = ConstExpression.default(symrepr._claripy, 'Ity_I32')
-            self.regs[884] = ConstExpression.default(symrepr._claripy, 'ity_i32')
+            self.regs[884] = ConstExpression.default(symrepr._claripy, 'Ity_I32')
+        elif self.thumb:
+            self.regs[392] = ConstExpression.default(symrepr._claripy, 'Ity_I32')
+            self.regs[392].it_taint = True
 
     def copy(self, newaddr):
         out = BlockState(self.binrepr, self.symrepr, newaddr)
@@ -227,6 +255,10 @@ class BlockState:
             if val.stack_addr:
                 out.regs[offset] = val
         return out
+
+    def lift(self, addr=None, **options):
+        if addr is None: addr = self.addr
+        return self.binrepr.angr.factory.block(addr, thumb=self.thumb, **options).vex
 
     def load_tempstore(self, tempstore):
         self.tempstore = tempstore
@@ -316,6 +348,7 @@ class SmartExpression:
         self.deps = []
         self.stack_addr = False
         self.is_concrete = False
+        self.it_taint = False
         self.rootval = False
         self.bincache = [None]
         self.size = vexpression.result_size if not vexpression.tag.startswith('Ico_') else vexpression.size
@@ -355,13 +388,16 @@ class SmartExpression:
             else:
                 self.copy_to_self(false_expr)
             cond_expr = SmartExpression(blockstate, vexpression.cond, mark, path + ['cond'])
-            self.is_concrete = false_expr.is_concrete and truth_expr.is_concrete and cond_expr.is_concrete
+            if not cond_expr.it_taint:
+                self.is_concrete = false_expr.is_concrete and truth_expr.is_concrete
+            self.it_taint = false_expr.it_taint or truth_expr.it_taint
         elif vexpression.tag in ('Iex_Unop','Iex_Binop','Iex_Triop','Iex_Qop'):
             try:
                 self.is_concrete = True
                 for i, expr in enumerate(vexpression.args):
                     arg = SmartExpression(blockstate, expr, mark, path + ['args', i])
                     self.is_concrete = self.is_concrete and arg.is_concrete
+                    self.it_taint = self.it_taint or arg.it_taint
                     self.deps.append(arg)
                 if vexpression.op.startswith('Iop_Mul') or vexpression.op.startswith('Iop_And'):
                     self.shield_constants(self.deps)
@@ -383,7 +419,9 @@ class SmartExpression:
                 l.error("Unsupported operation '%s', returning null", vexpression.op)
                 self.is_concrete = False
         elif vexpression.tag == 'Iex_CCall':
-            pass
+            for i, expr in enumerate(vexpression.args):
+                arg = SmartExpression(blockstate, expr, mark, path + ['args', i])
+                self.it_taint = self.it_taint or arg.it_taint
         elif vexpression.tag == 'Iex_GetI':
             pass
         else:
@@ -397,6 +435,7 @@ class SmartExpression:
         self.bincache = other.bincache
         self.stack_addr = other.stack_addr
         self.is_concrete = other.is_concrete
+        self.it_taint = other.it_taint
         self.rootval = other.rootval
         self.path = other.path
 
@@ -445,6 +484,7 @@ class SmartExpression:
         out.symrepr = out.blockstate.symrepr
         out.stack_addr = larger.stack_addr # sketchy...
         out.is_concrete = smaller.is_concrete and larger.is_concrete
+        out.it_taint = False
         out.rootval = False
         out.bincache = [None]
         out.cleanval = out.symrepr._claripy.Concat(larger.cleanval[larger.size-1:smaller.size], smaller.cleanval)
@@ -471,6 +511,7 @@ class SmartExpression:
         out.symrepr = out.blockstate.symrepr
         out.stack_addr = False
         out.is_concrete = self.is_concrete
+        out.it_taint = False
         out.rootval = False
         out.bincache = [None]
         out.cleanval = self.cleanval[size_bits-1:0]
@@ -493,6 +534,7 @@ class ConstExpression(object):
         self.deps = []
         self.stack_addr = False
         self.is_concrete = is_concrete
+        self.it_taint = False
         self.bincache = [None]
         self.rootval = False
         self.mark = None
