@@ -135,7 +135,7 @@ class CanonColors:
     def __init__(self):
         pass
     end = '\033[0m'
-    time = '\033[30m'
+    time = '\033[0m'
     name = '\033[1m'
 
     c_critical = '\033[1;48m'

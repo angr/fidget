@@ -38,6 +38,18 @@ def equals(item1, item2):
             yield (a.jk, b.jk)
             queue.append((a.dst, b.dst))
             queue.append((a.guard, b.guard))
+        elif a.tag == 'Ist_StoreG':
+            yield (a.end, b.end)
+            queue.append((a.addr, b.addr))
+            queue.append((a.data, b.data))
+            queue.append((a.guard, b.guard))
+        elif a.tag == 'Ist_LoadG':
+            yield (a.dst, b.dst)
+            yield (a.cvt, b.cvt)
+            yield (a.end, b.end)
+            queue.append((a.addr, b.addr))
+            queue.append((a.alt, b.alt))
+            queue.append((a.guard, b.guard))
         elif a.tag == 'Iex_Get':
             yield (a.offset, b.offset)
         elif a.tag == 'Iex_RdTmp':

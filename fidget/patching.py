@@ -111,6 +111,10 @@ class Fidget(object):
                 l.debug("Skipping function %s with unresolved jumps", func.name)
                 continue
 
+            # Check if the function starts at a SimProcedure (edge case)
+            if self._binrepr.cfg.get_any_node(funcaddr).simprocedure_name is not None:
+                l.debug('Skipping function %s starting with a SimProcedure', func.name)
+
             # Check if the function is white/blacklisted
             if (len(whitelist) > 0 and func.name not in whitelist) or \
                (len(blacklist) > 0 and func.name in blacklist):
