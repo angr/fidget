@@ -51,7 +51,7 @@ def generic_ctf_test(binary, tester, always, winner):
     patched_binary = binary + '.out'
 
     fidgetress = Fidget(binary)
-    fidgetress.patch()
+    fidgetress.patch(stacks={'blacklist': ['_init']})
     nose.tools.assert_not_equals(len(fidgetress.dump_patches()), 0)
     fidgetress.apply_patches(patched_binary)
 
@@ -73,7 +73,7 @@ def generic_test(binary, expected):
     nose.tools.assert_in(expected, output)
 
     fidgetress = Fidget(binary)
-    fidgetress.patch()
+    fidgetress.patch(stacks={'blacklist': ['_init']})
     nose.tools.assert_not_equals(len(fidgetress.dump_patches()), 0)
     fidgetress.apply_patches(patched_binary)
 
@@ -116,6 +116,7 @@ qemu_name = {
     'aarch64': 'qemu-aarch64',
     'mips': 'qemu-mips',
     'mipsel': 'qemu-mipsel',
+    'mips64': 'qemu-mips64'
 }
 
 ld_name = {
@@ -126,7 +127,9 @@ ld_name = {
     'mips': 'ld.so.1',
     'mipsel': 'ld.so.1',
     'armel': 'ld-linux.so.3',
-    'armhf': 'ld-linux-armhf.so.3'
+    'armhf': 'ld-linux-armhf.so.3',
+    'mips64': 'ld.so.1',
+    'aarch64': 'ld-linux-aarch64.so.1'
 }
 
 mydir = str(os.path.dirname(os.path.realpath(__file__)))

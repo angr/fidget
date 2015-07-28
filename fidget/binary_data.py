@@ -49,6 +49,7 @@ class BinaryData():
         self.physaddr = binrepr.relocate_to_physaddr(self.memaddr)
 
         self.armthumb = self.binrepr.cfg.is_thumb_addr(self.memaddr)
+        self.arm64 = self.binrepr.angr.arch.name == 'AARCH64'
         self.insbytes = self.binrepr.read_memory(self.memaddr, self.inslen)
         self.insvex = self.binrepr.make_irsb(self.insbytes, self.armthumb)
 
@@ -90,8 +91,7 @@ class BinaryData():
             symrepr.add(constraint)
 
     def search_value(self):
-        if self.binrepr.angr.arch.name.startswith('ARM'):
-            self.bit_length = 32
+        if self.binrepr.angr.arch.name in ('ARM', 'ARMEL', 'ARMHF', 'AARCH64'):
             # Extract self.armins, the int representation of the bytes as appears in the instruction manuals
             if self.armthumb:
                 self.armins = 0
@@ -101,203 +101,277 @@ class BinaryData():
             else:
                 self.armins = struct.unpack(self.binrepr.angr.arch.struct_fmt(32), self.insbytes)[0]
 
-            if not self.armthumb:
-                # ARM instructions
-                if self.armins & 0x0C000000 == 0x04000000:
-                    # LDR
-                    thoughtval = self.armins & 0xFFF
-                    if thoughtval != self.value:
-                        raise ValueNotFoundError
-                    self.armop = 1
-                elif self.armins & 0x0E000000 == 0x02000000:
-                    # Data processing w/ immediate
-                    shiftval = ((self.armins & 0xF00) >> 7)
-                    thoughtval = self.armins & 0xFF
-                    thoughtval = (thoughtval >> shiftval) | (thoughtval << (32 - shiftval))
-                    thoughtval &= 0xFFFFFFFF
-                    if thoughtval != self.value:
-                        raise ValueNotFoundError
-                    self.armop = 2
-                    self.bit_shift = self.symrepr._claripy.BitVec('%x_shift' % self.memaddr, 4)
-                    self.symval8 = self.symrepr._claripy.BitVec('%x_imm8' % self.memaddr, 8)
-                    self.constraints.append(self.symval ==
-                            self.symrepr._claripy.RotateRight(
-                                self.symval8.zero_extend(32-8),
-                                self.bit_shift.zero_extend(32-4)*2
-                            )
-                        )
-                elif self.armins & 0x0E400090 == 0x00400090:
-                    # LDRH
-                    thoughtval = (self.armins & 0xF) | ((self.armins & 0xF00) >> 4)
-                    thoughtval *= 1 if self.armins & 0x00800000 else -1
-                    if thoughtval != self.value:
-                        raise ValueNotFoundError
-                    self.armop = 3
-                elif self.armins & 0x0E000000 == 0x0C000000:
-                    # Coprocessor data transfer
-                    # i.e. FLD/FST
-                    thoughtval = self.armins & 0xFF
-                    thoughtval *= 4 if self.armins & 0x00800000 else -4
-                    if thoughtval != self.value:
-                        raise ValueNotFoundError
-                    self.armop = 4
-                    self.modconstraint = 4
-                else:
-                    raise ValueNotFoundError
-
-            else:
-                # THUMB instructions
-                # https://ece.uwaterloo.ca/~ece222/ARM/ARM7-TDMI-manual-pt3.pdf
-                if len(self.insbytes) == 2:
-                    # 16 bit instructions
-                    if self.armins & 0xF000 in (0x9000, 0xA000):
-                        # SP-relative LDR/STR, also SP-addiition
-                        # page 26, 28
-                        # unsigned offsets only, 10 bit imm stored w/o last two bits
-                        thoughtval = self.armins & 0xFF
-                        thoughtval *= 4
-                        if thoughtval != self.value:
-                            raise ValueNotFoundError
-                        self.armop = 5
-                        self.modconstraint = 4
-                    elif self.armins & 0xFF00 == 0xB000:
-                        # Add/sub offset to SP
-                        # page 30
-                        # uses sign bit, 9 bit imm stored w/o last two bits
-                        thoughtval = self.armins & 0x7F
-                        thoughtval *= 4
-                        if thoughtval != self.value:
-                            raise ValueNotFoundError
-                        self.armop = 6
-                        self.modconstraint = 4
-                    elif self.armins & 0xFC00 == 0x1C00:
-                        # ADD/SUB (immediate format)
-                        # page 7
-                        # uses sign bit, 3 bit immediate
-                        thoughtval = (self.armins & 0x01C0) >> 6
-                        if thoughtval != self.value:
-                            raise ValueNotFoundError
-                        self.armop = 7
-                    elif self.armins & 0xE000 == 0x2000:
-                        # Move/Compare/Add/Subtract immediate
-                        # page 9
-                        # Unsigned 8 bit immediate
-                        thoughtval = self.armins & 0xFF
-                        if thoughtval != self.value:
-                            raise ValueNotFoundError
-                        self.armop = 14
-                    else:
-                        raise ValueNotFoundError
-
-                elif len(self.insbytes) == 4:
-                    # 32 bit instructions
-                    # http://read.pudn.com/downloads159/doc/709030/Thumb-2SupplementReferenceManual.pdf
-                    if self.armins & 0xFE1F0000 == 0xF81F0000 or \
-                       self.armins & 0xFE800000 == 0xF8800000:
-                        # Load/Store
-                        # page 66, formats 1-2
-                        # imm12 with designated sign bit
+            if not self.arm64:
+                self.bit_length = 32
+                if not self.armthumb:
+                    # ARM instructions
+                    if self.armins & 0x0C000000 == 0x04000000:
+                        # LDR
                         thoughtval = self.armins & 0xFFF
                         if thoughtval != self.value:
                             raise ValueNotFoundError
-                        self.armop = 8
-                    elif self.armins & 0xFE800900 == 0xF8000800:
-                        # Load/Store
-                        # page 66, formats 3-4
-                        # imm8 with designated sign bit
+                        self.armop = 1
+                    elif self.armins & 0x0E000000 == 0x02000000:
+                        # Data processing w/ immediate
+                        shiftval = ((self.armins & 0xF00) >> 7)
                         thoughtval = self.armins & 0xFF
+                        thoughtval = (thoughtval >> shiftval) | (thoughtval << (32 - shiftval))
+                        thoughtval &= 0xFFFFFFFF
                         if thoughtval != self.value:
                             raise ValueNotFoundError
-                        self.armop = 9
-                    elif self.armins & 0xFE800900 == 0xF8000900:
-                        # Load/Store
-                        # page 66, formats 5-6
-                        # imm8, sign extended
-                        thoughtval = self.armins & 0x7F
-                        if self.armins & 0x80 == 0x80:
-                            thoughtval = (thoughtval ^ 0x7F) + 1
+                        self.armop = 2
+                        self.bit_shift = self.symrepr._claripy.BitVec('%x_shift' % self.memaddr, 4)
+                        self.symval8 = self.symrepr._claripy.BitVec('%x_imm8' % self.memaddr, 8)
+                        self.constraints.append(self.symval ==
+                                self.symrepr._claripy.RotateRight(
+                                    self.symval8.zero_extend(32-8),
+                                    self.bit_shift.zero_extend(32-4)*2
+                                )
+                            )
+                    elif self.armins & 0x0E400090 == 0x00400090:
+                        # LDRH
+                        thoughtval = (self.armins & 0xF) | ((self.armins & 0xF00) >> 4)
+                        thoughtval *= 1 if self.armins & 0x00800000 else -1
                         if thoughtval != self.value:
                             raise ValueNotFoundError
-                        self.armop = 10
-                    elif self.armins & 0xFB408000 == 0xF2000000:
-                        # Add/Sub
-                        # page 53, format 2
-                        # 12 bit immediate split into 3 bitfields
+                        self.armop = 3
+                    elif self.armins & 0x0E000000 == 0x0C000000:
+                        # Coprocessor data transfer
+                        # i.e. FLD/FST
                         thoughtval = self.armins & 0xFF
-                        thoughtval |= (self.armins & 0x7000) >> 4
-                        thoughtval |= (self.armins & 0x04000000) >> 15
+                        thoughtval *= 4 if self.armins & 0x00800000 else -4
                         if thoughtval != self.value:
                             raise ValueNotFoundError
-                        self.armop = 11
-                    elif self.armins & 0xFB408000 == 0xF2400000:
-                        # Move
-                        # page 53, format 3
-                        # 16 bit imediate split into 4 bitfields
-                        thoughtval = self.armins & 0xFF
-                        thoughtval |= (self.armins & 0x7000) >> 4
-                        thoughtval |= (self.armins & 0x04000000) >> 15
-                        thoughtval |= (self.armins & 0xF0000) >> 4
-                        if thoughtval != self.value:
-                            raise ValueNotFoundError
-                        self.armop = 12
-                    elif self.armins & 0xFA008000 == 0xF0000000:
-                        # Data processing, modified 12 bit imm, aka EVIL
-                        # page 53
-                        # wow. just. wow.
-                        imm12 = self.armins & 0xFF
-                        imm12 |= (self.armins & 0x7000) >> 4
-                        imm12 |= (self.armins & 0x04000000) >> 15
-                        # decoding algorithm from page 93
-                        if imm12 & 0xC00 == 0:
-                            if imm12 & 0x300 == 0:
-                                thoughtval = imm12
-                            elif imm12 & 0x300 == 0x100:
-                                thoughtval = imm12 & 0xFF
-                                thoughtval |= thoughtval << 16
-                            elif imm12 & 0x300 == 0x200:
-                                thoughtval = (imm12 & 0xFF) << 8
-                                thoughtval |= thoughtval << 16
-                            elif imm12 & 0x300 == 0x300:
-                                thoughtval = imm12 & 0xFF
-                                thoughtval |= thoughtval << 8
-                                thoughtval |= thoughtval << 16
-                        else:
-                            thoughtval = ror(0x80 | (imm12 & 0x7F), imm12 >> 7, 32)
-                        if thoughtval != self.value:
-                            raise ValueNotFoundError
-                        self.armop = 13
-                        self.symval8 = self.symrepr._claripy.BitVec('%x_imm12' % self.memaddr, 12)
-                        ITE = self.symrepr._claripy.If
-                        CAT = self.symrepr._claripy.Concat
-                        ROR = self.symrepr._claripy.RotateRight
-                        BVV = self.symrepr._claripy.BVV
-                        imm8 = self.symval8[7:0]
-                        imm7 = self.symval8[6:0]
-                        zero = BVV(0, 8)
-                        bit = BVV(1, 1)
-                        form1 = self.symval8[7:0].zero_extend(32-8)
-                        form2 = CAT(zero, imm8, zero, imm8)
-                        form3 = CAT(imm8, zero, imm8, zero)
-                        form4 = CAT(imm8, imm8, imm8, imm8)
-                        form5 = ROR(CAT(bit, imm7).zero_extend(32-8), self.symval8[11:7].zero_extend(32-5))
-                        monster = ITE(self.symval8[11:10] == 0,
-                                    ITE(self.symval8[9:9] == 0,
-                                        ITE(self.symval8[8:8] == 0,
-                                            form1,
-                                            form2
-                                        ),
-                                        ITE(self.symval8[8:8] == 0,
-                                            form3,
-                                            form4
-                                        )
-                                    ),
-                                    form5
-                                  )
-                        self.constraints.append(self.symval == monster)
+                        self.armop = 4
+                        self.modconstraint = 4
                     else:
                         raise ValueNotFoundError
+
                 else:
-                    raise FidgetUnsupportedError("You found a THUMB instruction longer than 32 bits!")
+                    # THUMB instructions
+                    # https://ece.uwaterloo.ca/~ece222/ARM/ARM7-TDMI-manual-pt3.pdf
+                    if len(self.insbytes) == 2:
+                        # 16 bit instructions
+                        if self.armins & 0xF000 in (0x9000, 0xA000):
+                            # SP-relative LDR/STR, also SP-addiition
+                            # page 26, 28
+                            # unsigned offsets only, 10 bit imm stored w/o last two bits
+                            thoughtval = self.armins & 0xFF
+                            thoughtval *= 4
+                            if thoughtval != self.value:
+                                raise ValueNotFoundError
+                            self.armop = 5
+                            self.modconstraint = 4
+                        elif self.armins & 0xFF00 == 0xB000:
+                            # Add/sub offset to SP
+                            # page 30
+                            # uses sign bit, 9 bit imm stored w/o last two bits
+                            thoughtval = self.armins & 0x7F
+                            thoughtval *= 4
+                            if thoughtval != self.value:
+                                raise ValueNotFoundError
+                            self.armop = 6
+                            self.modconstraint = 4
+                        elif self.armins & 0xFC00 == 0x1C00:
+                            # ADD/SUB (immediate format)
+                            # page 7
+                            # uses sign bit, 3 bit immediate
+                            thoughtval = (self.armins & 0x01C0) >> 6
+                            if thoughtval != self.value:
+                                raise ValueNotFoundError
+                            self.armop = 7
+                        elif self.armins & 0xE000 == 0x2000:
+                            # Move/Compare/Add/Subtract immediate
+                            # page 9
+                            # Unsigned 8 bit immediate
+                            thoughtval = self.armins & 0xFF
+                            if thoughtval != self.value:
+                                raise ValueNotFoundError
+                            self.armop = 14
+                        else:
+                            raise ValueNotFoundError
+
+                    elif len(self.insbytes) == 4:
+                        # 32 bit instructions
+                        # http://read.pudn.com/downloads159/doc/709030/Thumb-2SupplementReferenceManual.pdf
+                        if self.armins & 0xFE1F0000 == 0xF81F0000 or \
+                           self.armins & 0xFE800000 == 0xF8800000:
+                            # Load/Store
+                            # page 66, formats 1-2
+                            # imm12 with designated sign bit
+                            thoughtval = self.armins & 0xFFF
+                            if thoughtval != self.value:
+                                raise ValueNotFoundError
+                            self.armop = 8
+                        elif self.armins & 0xFE800900 == 0xF8000800:
+                            # Load/Store
+                            # page 66, formats 3-4
+                            # imm8 with designated sign bit
+                            thoughtval = self.armins & 0xFF
+                            if thoughtval != self.value:
+                                raise ValueNotFoundError
+                            self.armop = 9
+                        elif self.armins & 0xFE800900 == 0xF8000900:
+                            # Load/Store
+                            # page 66, formats 5-6
+                            # imm8, sign extended
+                            thoughtval = self.armins & 0x7F
+                            if self.armins & 0x80 == 0x80:
+                                thoughtval = (thoughtval ^ 0x7F) + 1
+                            if thoughtval != self.value:
+                                raise ValueNotFoundError
+                            self.armop = 10
+                        elif self.armins & 0xFB408000 == 0xF2000000:
+                            # Add/Sub
+                            # page 53, format 2
+                            # 12 bit immediate split into 3 bitfields
+                            thoughtval = self.armins & 0xFF
+                            thoughtval |= (self.armins & 0x7000) >> 4
+                            thoughtval |= (self.armins & 0x04000000) >> 15
+                            if thoughtval != self.value:
+                                raise ValueNotFoundError
+                            self.armop = 11
+                        elif self.armins & 0xFB408000 == 0xF2400000:
+                            # Move
+                            # page 53, format 3
+                            # 16 bit imediate split into 4 bitfields
+                            thoughtval = self.armins & 0xFF
+                            thoughtval |= (self.armins & 0x7000) >> 4
+                            thoughtval |= (self.armins & 0x04000000) >> 15
+                            thoughtval |= (self.armins & 0xF0000) >> 4
+                            if thoughtval != self.value:
+                                raise ValueNotFoundError
+                            self.armop = 12
+                        elif self.armins & 0xFA008000 == 0xF0000000:
+                            # Data processing, modified 12 bit imm, aka EVIL
+                            # page 53
+                            # wow. just. wow.
+                            imm12 = self.armins & 0xFF
+                            imm12 |= (self.armins & 0x7000) >> 4
+                            imm12 |= (self.armins & 0x04000000) >> 15
+                            # decoding algorithm from page 93
+                            if imm12 & 0xC00 == 0:
+                                if imm12 & 0x300 == 0:
+                                    thoughtval = imm12
+                                elif imm12 & 0x300 == 0x100:
+                                    thoughtval = imm12 & 0xFF
+                                    thoughtval |= thoughtval << 16
+                                elif imm12 & 0x300 == 0x200:
+                                    thoughtval = (imm12 & 0xFF) << 8
+                                    thoughtval |= thoughtval << 16
+                                elif imm12 & 0x300 == 0x300:
+                                    thoughtval = imm12 & 0xFF
+                                    thoughtval |= thoughtval << 8
+                                    thoughtval |= thoughtval << 16
+                            else:
+                                thoughtval = ror(0x80 | (imm12 & 0x7F), imm12 >> 7, 32)
+                            if thoughtval != self.value:
+                                raise ValueNotFoundError
+                            self.armop = 13
+                            self.symval8 = self.symrepr._claripy.BitVec('%x_imm12' % self.memaddr, 12)
+                            ITE = self.symrepr._claripy.If
+                            CAT = self.symrepr._claripy.Concat
+                            ROR = self.symrepr._claripy.RotateRight
+                            BVV = self.symrepr._claripy.BVV
+                            imm8 = self.symval8[7:0]
+                            imm7 = self.symval8[6:0]
+                            zero = BVV(0, 8)
+                            bit = BVV(1, 1)
+                            form1 = self.symval8[7:0].zero_extend(32-8)
+                            form2 = CAT(zero, imm8, zero, imm8)
+                            form3 = CAT(imm8, zero, imm8, zero)
+                            form4 = CAT(imm8, imm8, imm8, imm8)
+                            form5 = ROR(CAT(bit, imm7).zero_extend(32-8), self.symval8[11:7].zero_extend(32-5))
+                            monster = ITE(self.symval8[11:10] == 0,
+                                        ITE(self.symval8[9:9] == 0,
+                                            ITE(self.symval8[8:8] == 0,
+                                                form1,
+                                                form2
+                                            ),
+                                            ITE(self.symval8[8:8] == 0,
+                                                form3,
+                                                form4
+                                            )
+                                        ),
+                                        form5
+                                      )
+                            self.constraints.append(self.symval == monster)
+                        else:
+                            raise ValueNotFoundError
+                    else:
+                        raise FidgetUnsupportedError("You found a THUMB instruction longer than 32 bits!")
+
+            else:
+                self.bit_length = 64
+                # aarch64 instructions
+                # can't find a reference doc?????? I'm pulling these from VEX, guest_arm64_toIR.c
+                if self.armins & 0x7f800000 in (0x28800000, 0x29800000, 0x29000000):
+                    # LDP/SDP
+                    # line 4791
+                    # 7 bit immediate signed offset, scaled by load size (from MSB)
+                    size = 8 if self.armins & 0x80000000 else 4
+                    simm7 = (self.armins & 0x3f8000) >> 15
+                    simm7 = self.binrepr.resign_int(simm7, 7)
+                    simm7 *= size
+                    if simm7 != self.value:
+                        raise ValueNotFoundError
+                    if size == 8:
+                        self.armop = 15
+                        self.modconstraint = 8
+                    else:
+                        self.armop = 16
+                        self.modconstraint = 4
+                elif (self.armins & 0x3f800000 == 0x39000000) or \
+                     (self.armins & 0x3f800000 == 0x39800000 and \
+                          ((self.armins >> 30) | ((self.armins >> 22) & 1)) in (4, 2, 3, 0, 1)):
+                    # LDR/STR, LDRS
+                    # line 4639, 5008
+                    # 12 bit immediate unsigned offset, scaled by load size (from 2 MSB)
+                    size = 1 << ((self.armins & 0xc0000000) >> 30)
+                    offs = (self.armins & 0x3ffc00) >> 10
+                    offs *= size
+                    if offs != self.value:
+                        raise ValueNotFoundError
+                    self.modconstraint = size
+                    if size == 1:
+                        self.armop = 17
+                    elif size == 2:
+                        self.armop = 18
+                    elif size == 4:
+                        self.armop = 19
+                    else:
+                        self.armop = 20
+                elif self.armins & 0x1f000000 == 0x11000000:
+                    # ADD/SUB imm
+                    # line 2403
+                    # 12 bit shifted unsigned immediate
+                    if not self.armins & 0x80000000:
+                        self.bit_length = 32
+                    shift = (self.armins >> 22) & 3
+                    imm12 = (self.armins >> 10) & 0xfff
+                    imm12 <<= 12*shift
+                    if imm12 != self.value:
+                        raise ValueNotFoundError
+                    self.armop = 21
+                    self.bit_shift = self.symrepr._claripy.BitVec('%x_shift' % self.memaddr, 2)
+                    self.symval8 = self.symrepr._claripy.BitVec('%x_imm12' % self.memaddr, 12)
+                    bs_full = self.bit_shift.zero_extend(self.symval.size() - 2)
+                    imm_full = self.symval8.zero_extend(self.symval.size() - 12)
+                    self.constraints.append(self.symval == imm_full << (bs_full*12))
+                    self.constraints.append(self.symrepr._claripy.ULT(self.bit_shift, 2))
+                elif self.armins & 0x3fa00000 == 0x38000000:
+                    # LDUR/STUR
+                    # Line 4680
+                    # 9 bit signed immediate offset
+                    imm9 = (self.armins >> 12) & 0x1ff
+                    imm9 = self.binrepr.resign_int(imm9, 9)
+                    if imm9 != self.value:
+                        raise ValueNotFoundError
+                    self.armop = 22
+
+                else:
+                    raise ValueNotFoundError
+
 
             if not self.sanity_check():
                 raise ValueNotFoundError
@@ -345,7 +419,10 @@ class BinaryData():
 
         for challenger in (tog[0], tog[1]-1):
             if challenger == 0:
-                challenger = 4  # zero will cause problems. 4 should be in range?
+                if 4 % self.modconstraint != 0:
+                    challenger = 8
+                else:
+                    challenger = 4  # zero will cause problems. 4 should be in range?
             try:
                 newblock = self.binrepr.make_irsb(self.get_patched_instruction(challenger), self.armthumb)
             except PyVEXError:
@@ -493,15 +570,47 @@ class BinaryData():
                     top_bit = int(log(newval, 2))
                     shift_qty = (15 - top_bit) % 32
                     if shift_qty < 8 or shift_qty > 31:
-                        raise ValueNotFoundError
+                        raise FidgetError("Unrepresentable THUMB immediate!")
                     imm7 = rol(value, shift_qty, 32)
                     if imm7 & 0xFF != imm7:
-                        raise ValueNotFoundError
+                        raise FidgetError("Unrepresentable THUMB immediate!")
                     newval |= (imm7 & 0x7F) | ((shift_qty & 1) << 7) | ((shift_qty & 14) << 11) | ((shift_qty & 16) << 22)
             return struct.pack(self.binrepr.angr.arch.struct_fmt(16), newval >> 16) + \
                    struct.pack(self.binrepr.angr.arch.struct_fmt(16), newval & 0xFFFF)
+        # AArch64 instructions
+        elif self.armop in (15, 16):
+            size = 8 if self.armop == 15 else 4
+            newimm = value / size
+            newimm = self.binrepr.unsign_int(newimm, 7) & 0x7F
+            newval = self.armins & 0xffc07fff
+            newval |= newimm << 15
+            return struct.pack(self.binrepr.angr.arch.struct_fmt(32), newval)
+        elif self.armop in (17, 18, 19, 20):
+            size = 1 << (self.armop - 17)
+            newimm = value / size
+            newval = self.armins & 0xffc003ff
+            newval |= newimm << 10
+            return struct.pack(self.binrepr.angr.arch.struct_fmt(32), newval)
+        elif self.armop == 21:
+            shift = 0
+            while shift < 2:
+                mask = 0xfff << (12*shift)
+                if mask & value == value:
+                    break
+                shift += 1
+            else:
+                raise FidgetError("Unrepresentable ARM64 immediate!")
+            newval = self.armins & 0xff0003ff
+            newimm = value >> (12*shift)
+            newval |= (newimm << 10) | (shift << 22)
+            return struct.pack(self.binrepr.angr.arch.struct_fmt(32), newval)
+        elif self.armop == 22:
+            newimm = self.binrepr.unsign_int(value, 9) & 0x1FF
+            newval = self.armins & 0xffe00fff
+            newval |= newimm << 12
+            return struct.pack(self.binrepr.angr.arch.struct_fmt(32), newval)
+        # Generic encodings
         elif self.bit_offset % 8 == 0 and self.bit_length % 8 == 0:
-            # Generic encodings
             value = self.binrepr.unsign_int(value, self.bit_length)
             puts = self.binrepr.pack_format(value, self.bit_length / 8)
             outs = [x for x in self.insbytes]
@@ -549,6 +658,23 @@ class BinaryData():
             return (0, 0x10000)
         elif self.armop == 13:
             return (0, 0x100000000)
+        # Aarch64 instructions
+        elif self.armop == 15:
+            return (-512, 505)
+        elif self.armop == 16:
+            return (-256, 253)
+        elif self.armop == 17:
+            return (0, 0x1000)
+        elif self.armop == 18:
+            return (0, 0x1fff)
+        elif self.armop == 19:
+            return (0, 0x3ffd)
+        elif self.armop == 20:
+            return (0, 0x7ff9)
+        elif self.armop == 21:
+            return (0, 0xfff001)
+        elif self.armop == 22:
+            return (-0x100, 0x100)
         else:
             half = (1 << self.bit_length) / 2
             tophalf = half

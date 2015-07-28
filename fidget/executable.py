@@ -7,13 +7,8 @@ import pickle
 from angr import Project
 import pyvex
 
-from .errors import FidgetUnsupportedError
-
 import logging
 l = logging.getLogger('fidget.executable')
-
-#hopefully the only processors we should ever have to target
-processors = ['X86', 'AMD64', 'ARMEL', 'ARMHF', 'PPC32', 'MIPS32', 'PPC64']
 
 class Executable(object):
     def __init__(self, filename, cache=False, cfg_options=None, debugangr=False):
@@ -43,9 +38,6 @@ class Executable(object):
                 l.exception('Error pickling CFG')
 
         self.funcman = self.cfg.function_manager
-        self.native_word = self.angr.arch.bits
-        if self.angr.arch.name not in processors:
-            raise FidgetUnsupportedError("Unsupported architecture " + self.angr.arch.name)
 
     def relocate_to_physaddr(self, address):
         return self.angr.loader.main_bin.addr_to_offset(address)
@@ -60,7 +52,7 @@ class Executable(object):
         return self.angr.factory._lifter._post_process(bb)
 
     def resign_int(self, n, word_size=None):
-        if word_size is None: word_size = self.native_word
+        if word_size is None: word_size = self.angr.arch.bits
         top = (1 << word_size) - 1
         if n > top:
             return None
@@ -69,7 +61,7 @@ class Executable(object):
         return int(-((n ^ top) + 1))
 
     def unsign_int(self, n, word_size=None):
-        if word_size is None: word_size = self.native_word
+        if word_size is None: word_size = self.angr.arch.bits
         if n < 0:
             n += 1 << word_size
         return int(n)
