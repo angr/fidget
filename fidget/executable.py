@@ -51,21 +51,6 @@ class Executable(object):
         bb = pyvex.IRSB(bytes=byte_string, arch=self.angr.arch, bytes_offset=offset, mem_addr=addr)
         return self.angr.factory._lifter._post_process(bb)
 
-    def resign_int(self, n, word_size=None):
-        if word_size is None: word_size = self.angr.arch.bits
-        top = (1 << word_size) - 1
-        if n > top:
-            return None
-        if n < top/2: # woo int division
-            return int(n)
-        return int(-((n ^ top) + 1))
-
-    def unsign_int(self, n, word_size=None):
-        if word_size is None: word_size = self.angr.arch.bits
-        if n < 0:
-            n += 1 << word_size
-        return int(n)
-
     def pack_format(self, val, size):
         fmt = ('<' if self.is_little_endian() else '>') + {1: 'B', 2: 'H', 4: 'I', 8: 'Q', 16: 'X', 32: 'Y', 64: 'Z'}[size]
         return struct.pack(fmt, val)
