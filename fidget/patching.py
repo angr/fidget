@@ -254,11 +254,9 @@ class Fidget(object):
             if solver.satisfiable(extra_constraints=[constraint]):
                 l.debug("Added unsafe constraint:         %s", constraint)
                 solver.add(constraint)
-                assert solver.satisfiable()
             else:
                 l.debug("Failed to add unsafe constraint: %s", constraint)
 
-        assert solver.satisfiable()
         new_stack = solver.eval(stack.sym_size, 1)[0].value
         if new_stack == stack.conc_size:
             l.warning('\tUnable to resize stack')
