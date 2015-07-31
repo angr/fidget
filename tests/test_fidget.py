@@ -31,4 +31,4 @@ def test_ctf():
 if __name__ == '__main__':
     for testiter in (test_arrays(), test_loops(), test_division(), test_ctf()):
         for testfunc in testiter:
-            testfunc[0]()
+            testfunc[0](testfunc[1])
