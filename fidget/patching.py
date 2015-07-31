@@ -134,19 +134,17 @@ class Fidget(object):
 
 
     def patch_function_stack(self, funcaddr, has_return, safe=False, largemode=False):
-        clrp = claripy.ClaripyStandalone('fidget_function_%x' % funcaddr)
-        clrp.unique_names = False
-        symrepr = clrp.solver()
+        solver = claripy.Solver()
         alloc_op = None   # the instruction that performs a stack allocation
         dealloc_ops = []  # the instructions that perform a stack deallocation
         least_alloc = None # the smallest allocation known
-        stack = Stack(self._binrepr, symrepr, 0)
-        for tag, bindata in find_stack_tags(self._binrepr, symrepr, funcaddr):
+        stack = Stack(self._binrepr, solver, 0)
+        for tag, bindata in find_stack_tags(self._binrepr, funcaddr):
             if tag == '':
                 continue
             elif tag.startswith('ABORT'):
                 return
-            l.debug('Got a tag at 0x%0.8x: %s: %#x', bindata.memaddr, tag, bindata.value)
+            l.debug('Got a tag at %#0.8x: %s: %#x', bindata.addr, tag, bindata.value)
 
             if tag == 'STACK_ALLOC':
                 if alloc_op is None or bindata.value < alloc_op.value:
@@ -219,47 +217,47 @@ class Fidget(object):
         stack.collapse()
         stack.mark_sizes()
 
-        alloc_op.apply_constraints(symrepr)
-        symrepr.add(alloc_op.symval == -stack.sym_size)
+        alloc_op.apply_constraints(solver)
+        solver.add(alloc_op.symval == -stack.sym_size)
         for op in dealloc_ops:
-            op.apply_constraints(symrepr)
-            symrepr.add(op.symval == 0)
+            op.apply_constraints(solver)
+            solver.add(op.symval == 0)
 
         if largemode and not safe:
-            symrepr.add(stack.sym_size <= stack.conc_size + (1024 * stack.num_vars + 2048))
+            solver.add(stack.sym_size <= stack.conc_size + (1024 * stack.num_vars + 2048))
             stack.unsafe_constraints.append(stack.sym_size >= stack.conc_size + (1024 * stack.num_vars))
             stack.unsafe_constraints.append(stack.sym_size >= 0x78)
             stack.unsafe_constraints.append(stack.sym_size >= 0xF8)
         elif largemode and safe:
-            symrepr.add(stack.sym_size <= stack.conc_size + 1024*16)
+            solver.add(stack.sym_size <= stack.conc_size + 1024*16)
             stack.unsafe_constraints.append(stack.sym_size >= stack.conc_size + 1024*8)
             stack.unsafe_constraints.append(stack.sym_size >= 0x78)
             stack.unsafe_constraints.append(stack.sym_size >= 0xF0)
         elif not largemode and safe:
-            symrepr.add(stack.sym_size <= stack.conc_size + 256)
+            solver.add(stack.sym_size <= stack.conc_size + 256)
         elif not largemode and not safe:
-            symrepr.add(stack.sym_size <= stack.conc_size + (16 * stack.num_vars + 32))
+            solver.add(stack.sym_size <= stack.conc_size + (16 * stack.num_vars + 32))
 
         stack.sym_link(safe=safe)
 
         # OKAY HERE WE GO
         #print '\nConstraints:'
-        #vexutils.columnize(str(x) for x in symrepr.constraints)
+        #vexutils.columnize(str(x) for x in solver.constraints)
         #print
 
-        if not symrepr.satisfiable():
+        if not solver.satisfiable():
             l.critical('(%#x) Safe constraints unsatisfiable, fix this NOW', funcaddr)
             raise FidgetError("You're a terrible programmer")
 
         # z3 is smart enough that this doesn't add any noticable overhead
         for constraint in stack.unsafe_constraints:
-            if symrepr.satisfiable(extra_constraints=[constraint]):
+            if solver.satisfiable(extra_constraints=[constraint]):
                 l.debug("Added unsafe constraint:         %s", constraint)
-                symrepr.add(constraint)
+                solver.add(constraint)
             else:
                 l.debug("Failed to add unsafe constraint: %s", constraint)
 
-        new_stack = symrepr.any(stack.sym_size).value
+        new_stack = solver.eval(stack.sym_size, 1)[0].value
         if new_stack == stack.conc_size:
             l.warning('\tUnable to resize stack')
             return
@@ -267,15 +265,14 @@ class Fidget(object):
         l.info('\tResized stack from 0x%x to 0x%x', stack.conc_size, new_stack)
 
         for var in stack:
-            fixedval = symrepr.any(var.sym_addr)
-            fixedval = self._binrepr.resign_int(fixedval.value, fixedval.size())
+            fixedval = solver.eval(var.sym_addr, 1)[0].signed
             if var.size is None:
                 l.debug('Moved %#x (unsized) to %#x', var.conc_addr, fixedval)
             else:
                 l.debug('Moved %#x (size %#x) to %#x', var.conc_addr, var.size, fixedval)
 
-        self._stack_patch_data += alloc_op.get_patch_data(symrepr)
+        self._stack_patch_data += alloc_op.get_patch_data(solver)
         for dealloc in dealloc_ops:
-            self._stack_patch_data += dealloc.get_patch_data(symrepr)
+            self._stack_patch_data += dealloc.get_patch_data(solver)
         self._stack_patch_data += stack.patches
 
