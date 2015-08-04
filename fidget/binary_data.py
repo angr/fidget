@@ -10,16 +10,6 @@ from claripy import BVV
 import logging
 l = logging.getLogger('fidget.binary_data')
 
-# BinaryData
-# The fundemental link between binary data and things that know what binary data should be
-# Knows how to tell if an instruction contains a particular value
-# And if it does, how to change it
-# And also how to apply the constraints for each value, i.e. range
-
-# Further down is BinaryDataConglomerate
-# Which is a simple way to pass around values that actually depend
-# on multiple numbers in the binary
-
 # http://www.falatic.com/index.php/108/python-and-bitwise-rotation
 # Rotate left: 0b1001 --> 0b0011
 rol = lambda val, r_bits, max_bits: \
@@ -46,29 +36,61 @@ def unsign_int(n, word_size):
 
 
 class BinaryData(object):
+    '''
+    The fundemental link between an instruction and the immediates and offsets encoded in it.
+    When you initialize this class, if the constructor returns correctly, the returned instance
+    contains the information necessary to change the value you specified into any value supported
+    by the instruction's encoding.
+
+    The properties and methods you care about are:
+    - binarydata.patch_value_expression: a claripy AST, based on some arbitrary variables,
+        that can take on all the values representable by the instruction's encoding. If you have a
+        claripy solver you're using to constraint-solve for a correct state, you can simply add the
+        constraint that this expression must be equal to whatever variable you're using to
+        represent the value produced by decoding this instruction.
+    - binarydata.patch_bytes_expression: Not actually very useful to the end user, but this is
+        another AST, based on the same variables as the previous, that will produce the actual
+        instruction bytes that will end up in the binary.
+    - binarydata.get_patch_data(): get the actual bytes for the instruction, patched with a
+        certain value. Check its docstring for details.
+    '''
     def __init__(self, project, addr, value, block=None, path=None, skip=0):
+        '''
+        :param project: The angr.Project to operate on.
+        :param addr:    The address of the instruction to operate on. If this is a THUMB
+                        instruction, it should be odd.
+        :param value:   The value, currently present in the instruction, that you'd like to be
+                        able to change with this tool.
+        :param block:   Optional: the angr.lifter.Block instance representing the lift of the
+                        single instruction at address addr.
+        :param path:    Optional: please don't touch this, this is for fidget
+        :param skip:    Optional: In the rare case that you specify the value property, and the
+                        BinaryData instance that gets returned is tuned to change a different
+                        field of that value present in the instruction than the one you want,
+                        increment this value in your next call to this constructor, and that value
+                        will be skipped over.
+        '''
         if not isinstance(value, (int, long)) or value < 0:
             raise ValueError('value must be an unsigned int or long!')
-        self.angr = project
+        self._project = project
         self.unsigned_value = value
         self.value = None
         self.addr = addr
 
-        self.arm = project.arch.name.startswith('ARM') or project.arch.name == 'AARCH64'
-        self.armthumb = self.arm and addr & 1 == 1
-        self.arm64 = project.arch.name == 'AARCH64'
+        self._arm = project.arch.name.startswith('ARM') or project.arch.name == 'AARCH64'
+        self._armthumb = self._arm and addr & 1 == 1
+        self._arm64 = project.arch.name == 'AARCH64'
 
         if not block:
             block = project.factory.block(addr, num_inst=1, max_size=400, opt_level=1)
-        self.block = block
-        self.insvex = block.vex
-        self.insbytes = self.block.bytes
-        self.inslen = len(self.insbytes)
+        self._block = block
+        self._insvex = block.vex
+        self._insbytes = self._block.bytes
+        self._inslen = len(self._insbytes)
 
         self.patch_bytes_expression = None
         self.patch_value_expression = None
-        self.already_patched = False
-        self.test_values = ()
+        self._test_values = ()
 
         # this is some weird logic to make some potentially dumb behavior
         # transparent to the user.
@@ -85,16 +107,16 @@ class BinaryData(object):
             while True:
                 # if this call raises an error it means we're well and truly done. Let the user see.
                 try:
-                    co, path = vexutils.search_block(self.insvex, self.unsigned_value, internal_skip)
+                    co, path = vexutils.search_block(self._insvex, self.unsigned_value, internal_skip)
                 except ValueNotFoundError:
-                    self.error()
-                self.path = path
+                    self._error()
+                self._path = path
                 self.bits = co.size
                 self.value = resign_int(self.unsigned_value, self.bits)
                 try:
                     # if this function raises an error, it means the current constant shouldn't
                     # be considered. in that case do not touch the user's skip value.
-                    self.search_value()
+                    self._search_value()
                 except ValueNotFoundError:
                     internal_skip += 1
                     continue
@@ -106,48 +128,71 @@ class BinaryData(object):
                     internal_skip += 1
                     continue
         else:
-            self.path = path
+            self._path = path
             type_path = path[:-1] + ['size']
             try:
                 # if this function raises an error, the user fucked up the path.
-                self.bits = vexutils.get_from_path(self.insvex, type_path)
+                self.bits = vexutils.get_from_path(self._insvex, type_path)
                 self.value = resign_int(self.unsigned_value, self.bits)
                 # if this function raises an error, the user gave an unmodifiable path
-                self.search_value()
+                self._search_value()
             except ValueNotFoundError:
-                self.error()
+                self._error()
 
         # if we got this far, we are modifiable!! clean up a bit
-        del self.block
-        del self.insvex
-        del self.test_values
+        del self._block
+        del self._insvex
+        del self._test_values
 
-    def error(self):
+    def get_patch_data(self, value=None, solver=None):
+        '''
+        Produce the actual patch data for a modified instruction, in the form of a list of tuples
+        [(physaddr, patch_bytes), ...], where physaddr is the offset into the actual object file
+        and patch_bytes is a string to be written into the binary at that address.
+
+        There are two ways to call this function, one with :param value:, which should be the
+        integer you'd like to patch into the instruction, or :param solver:, which is a
+        claripy.Solver instance that can be queried for the value of self.patch_bytes_expression.
+        You must provide exactly one of these arguments.
+        '''
+        if not (value is None) ^ (solver is None):
+            raise ValueError('Must provide a value xor a solver!')
+        patch_bytes = self._get_patched_instruction(value=value, solver=solver)
+        if value is None:
+            value = solver.eval(self.patch_value_expression, 1)[0].signed
+        l.debug('Patching address %#x with value %#x', self.addr, value)
+        if patch_bytes == self._insbytes:
+            return []
+        physaddr = self._project.loader.main_bin.addr_to_offset(self.addr)
+        if self._armthumb: physaddr -= 1
+        return [(physaddr, patch_bytes)]
+
+    def _error(self):
         raise ValueNotFoundError('Value not found: %#x at %#x' % (self.unsigned_value, self.addr))
 
-    def imm(self, size, name=None):
+    def _imm(self, size, name=None):
         if name is None:
             name = 'imm%d' % size
         return claripy.BV('%x_%s' % (self.addr, name), size)
 
-    def search_value(self):
-        if self.arm:
-            armins = self.string_to_insn(self.insbytes)
-            if not self.arm64:
-                if not self.armthumb:
+    def _search_value(self):
+        if self._arm:
+            armins = self._string_to_insn(self._insbytes)
+            if not self._arm64:
+                if not self._armthumb:
                     # ARM instructions
                     if armins & 0x0C000000 == 0x04000000:
                         # LDR
                         thoughtval = armins & 0xFFF
                         if thoughtval != self.value:
                             raise ValueNotFoundError
-                        imm12 = self.imm(12)
+                        imm12 = self._imm(12)
                         self.patch_value_expression = imm12.zero_extend(self.bits-12)
                         self.patch_bytes_expression = claripy.Concat(
                                 BVV(armins >> 12, 20),
                                 imm12
                             )
-                        self.test_values = (1, 0xfff)
+                        self._test_values = (1, 0xfff)
                     elif armins & 0x0E000000 == 0x02000000:
                         # Data processing w/ immediate
                         shiftval = (armins & 0xF00) >> 7
@@ -155,8 +200,8 @@ class BinaryData(object):
                         thoughtval = ror(thoughtval, shiftval, 32)
                         if thoughtval != self.value:
                             raise ValueNotFoundError
-                        shift = self.imm(4, 'shift')
-                        imm8 = self.imm(8)
+                        shift = self._imm(4, 'shift')
+                        imm8 = self._imm(8)
                         self.patch_value_expression = claripy.RotateRight(
                                 imm8.zero_extend(32-8), shift.zero_extend(32-4)*2
                             )
@@ -165,14 +210,14 @@ class BinaryData(object):
                                 shift,
                                 imm8
                             )
-                        self.test_values = (1, 0xff, 0xff000000)
+                        self._test_values = (1, 0xff, 0xff000000)
                     elif armins & 0x0E400090 == 0x00400090:
                         # LDRH
                         thoughtval = (armins & 0xF) | ((armins & 0xF00) >> 4)
                         if thoughtval != self.value:
                             raise ValueNotFoundError
-                        hinib = self.imm(4, 'hinib')
-                        lonib = self.imm(4, 'lonib')
+                        hinib = self._imm(4, 'hinib')
+                        lonib = self._imm(4, 'lonib')
                         self.patch_value_expression = claripy.Concat(hinib, lonib).zero_extend(self.bits-8)
                         self.patch_bytes_expression = claripy.Concat(
                                 BVV(armins >> 12, 20),
@@ -180,7 +225,7 @@ class BinaryData(object):
                                 BVV((armins >> 4) & 0xF, 4),
                                 lonib
                             )
-                        self.test_values = (1, 0xff)
+                        self._test_values = (1, 0xff)
                     elif armins & 0x0E000000 == 0x0C000000:
                         # Coprocessor data transfer
                         # i.e. FLD/FST
@@ -188,20 +233,20 @@ class BinaryData(object):
                         thoughtval *= 4
                         if thoughtval != self.value:
                             raise ValueNotFoundError
-                        imm8 = self.imm(8)
+                        imm8 = self._imm(8)
                         self.patch_value_expression = imm8.zero_extend(self.bits-8) << 2
                         self.patch_bytes_expression = claripy.Concat(
                                 BVV(armins >> 8, 24),
                                 imm8
                             )
-                        self.test_values = (4, 0x3fc)
+                        self._test_values = (4, 0x3fc)
                     else:
                         raise ValueNotFoundError
 
                 else:
                     # THUMB instructions
                     # https://ece.uwaterloo.ca/~ece222/ARM/ARM7-TDMI-manual-pt3.pdf
-                    if self.inslen == 2:
+                    if self._inslen == 2:
                         # 16 bit instructions
                         if armins & 0xF000 in (0x9000, 0xA000):
                             # SP-relative LDR/STR, also SP-addiition
@@ -211,13 +256,13 @@ class BinaryData(object):
                             thoughtval *= 4
                             if thoughtval != self.value:
                                 raise ValueNotFoundError
-                            imm8 = self.imm(8)
+                            imm8 = self._imm(8)
                             self.patch_value_expression = imm8.zero_extend(self.bits-8) << 2
                             self.patch_bytes_expression = claripy.Concat(
                                     BVV(armins >> 8, 8),
                                     imm8
                                 )
-                            self.test_values = (4, 0x3fc)
+                            self._test_values = (4, 0x3fc)
                         elif armins & 0xFF00 == 0xB000:
                             # Add/sub offset to SP
                             # page 30
@@ -226,13 +271,13 @@ class BinaryData(object):
                             thoughtval *= 4
                             if thoughtval != self.value:
                                 raise ValueNotFoundError
-                            imm7 = self.imm(7)
+                            imm7 = self._imm(7)
                             self.patch_value_expression = imm7.zero_extend(self.bits-7) << 2
                             self.patch_bytes_expression = claripy.Concat(
                                     BVV(armins >> 7, 9),
                                     imm7
                                 )
-                            self.test_values = (4, 0x1fc)
+                            self._test_values = (4, 0x1fc)
                         elif armins & 0xFC00 == 0x1C00:
                             # ADD/SUB (immediate format)
                             # page 7
@@ -240,14 +285,14 @@ class BinaryData(object):
                             thoughtval = (armins & 0x01C0) >> 6
                             if thoughtval != self.value:
                                 raise ValueNotFoundError
-                            imm3 = self.imm(3)
+                            imm3 = self._imm(3)
                             self.patch_value_expression = imm3.zero_extend(self.bits-3)
                             self.patch_bytes_expression = claripy.Concat(
                                     BVV(armins >> 9, 7),
                                     imm3,
                                     BVV(armins & 0x3F, 6)
                                 )
-                            self.test_values = (1, 7)
+                            self._test_values = (1, 7)
                         elif armins & 0xE000 == 0x2000:
                             # Move/Compare/Add/Subtract immediate
                             # page 9
@@ -255,17 +300,17 @@ class BinaryData(object):
                             thoughtval = armins & 0xFF
                             if thoughtval != self.value:
                                 raise ValueNotFoundError
-                            imm8 = self.imm(8)
+                            imm8 = self._imm(8)
                             self.patch_value_expression = imm8.zero_extend(self.bits-8)
                             self.patch_bytes_expression = claripy.Concat(
                                     BVV(armins >> 8, 8),
                                     imm8
                                 )
-                            self.test_values = (1, 0xff)
+                            self._test_values = (1, 0xff)
                         else:
                             raise ValueNotFoundError
 
-                    elif self.inslen == 4:
+                    elif self._inslen == 4:
                         # 32 bit instructions
                         # http://read.pudn.com/downloads159/doc/709030/Thumb-2SupplementReferenceManual.pdf
                         if armins & 0xFE1F0000 == 0xF81F0000 or \
@@ -276,13 +321,13 @@ class BinaryData(object):
                             thoughtval = armins & 0xFFF
                             if thoughtval != self.value:
                                 raise ValueNotFoundError
-                            imm12 = self.imm(12)
+                            imm12 = self._imm(12)
                             self.patch_value_expression = imm12.zero_extend(self.bits-12)
                             self.patch_bytes_expression = claripy.Concat(
                                     BVV(armins >> 12, 20),
                                     imm12
                                 )
-                            self.test_values = (1, 0xfff)
+                            self._test_values = (1, 0xfff)
                         elif armins & 0xFE800900 == 0xF8000800:
                             # Load/Store
                             # page 66, formats 3-4
@@ -290,13 +335,13 @@ class BinaryData(object):
                             thoughtval = armins & 0xFF
                             if thoughtval != self.value:
                                 raise ValueNotFoundError
-                            imm8 = self.imm(8)
+                            imm8 = self._imm(8)
                             self.patch_value_expression = imm8.zero_extend(self.bits-8)
                             self.patch_bytes_expression = claripy.Concat(
                                     BVV(armins >> 8, 24),
                                     imm8
                                 )
-                            self.test_values = (1, 0xff)
+                            self._test_values = (1, 0xff)
                         elif armins & 0xFE800900 == 0xF8000900:
                             # Load/Store
                             # page 66, formats 5-6
@@ -306,13 +351,13 @@ class BinaryData(object):
                                 thoughtval = (thoughtval ^ 0x7F) + 1
                             if thoughtval != self.value:
                                 raise ValueNotFoundError
-                            imm8 = self.imm(8)
+                            imm8 = self._imm(8)
                             self.patch_value_expression = imm8.sign_extend(self.bits-8)
                             self.patch_bytes_expression = claripy.Concat(
                                     BVV(armins >> 8, 24),
                                     imm8
                                 )
-                            self.test_values = (-0x80, 0x7f)
+                            self._test_values = (-0x80, 0x7f)
                         elif armins & 0xFB408000 == 0xF2000000:
                             # Add/Sub
                             # page 53, format 2
@@ -322,9 +367,9 @@ class BinaryData(object):
                             thoughtval |= (armins & 0x04000000) >> 15
                             if thoughtval != self.value:
                                 raise ValueNotFoundError
-                            imm8 = self.imm(8)
-                            imm3 = self.imm(3)
-                            imm1 = self.imm(1)
+                            imm8 = self._imm(8)
+                            imm3 = self._imm(3)
+                            imm1 = self._imm(1)
                             self.patch_value_expression = claripy.Concat(
                                     imm1,
                                     imm3,
@@ -338,7 +383,7 @@ class BinaryData(object):
                                     BVV((armins & 0xF00) >> 8, 4),
                                     imm8
                                 )
-                            self.test_values = (1, 0xfff)
+                            self._test_values = (1, 0xfff)
                         elif armins & 0xFB408000 == 0xF2400000:
                             # Move
                             # page 53, format 3
@@ -349,10 +394,10 @@ class BinaryData(object):
                             thoughtval |= (armins & 0xF0000) >> 4
                             if thoughtval != self.value:
                                 raise ValueNotFoundError
-                            imm8 = self.imm(8)
-                            imm3 = self.imm(3)
-                            imm1 = self.imm(1)
-                            imm4 = self.imm(1)
+                            imm8 = self._imm(8)
+                            imm3 = self._imm(3)
+                            imm1 = self._imm(1)
+                            imm4 = self._imm(1)
                             self.patch_value_expression = claripy.Concat(
                                     imm4,
                                     imm1,
@@ -369,7 +414,7 @@ class BinaryData(object):
                                     BVV((armins & 0xF00) >> 8, 4),
                                     imm8
                                 )
-                            self.test_values = (1, 0xffff)
+                            self._test_values = (1, 0xffff)
                         elif armins & 0xFA008000 == 0xF0000000:
                             # Data processing, modified 12 bit imm, aka EVIL
                             # page 53
@@ -395,7 +440,7 @@ class BinaryData(object):
                                 thoughtval = ror(0x80 | (imm12 & 0x7F), imm12 >> 7, 32)
                             if thoughtval != self.value:
                                 raise ValueNotFoundError
-                            imm12 = self.imm(12)
+                            imm12 = self._imm(12)
                             ITE = claripy.If
                             CAT = claripy.Concat
                             ROR = claripy.RotateRight
@@ -429,7 +474,7 @@ class BinaryData(object):
                                     BVV((armins & 0xF00) >> 8, 4),
                                     imm8
                                 )
-                            self.test_values = (0xff00ff00, 0x00ff00ff, 0xffffffff, 0xff, 0xff000000)
+                            self._test_values = (0xff00ff00, 0x00ff00ff, 0xffffffff, 0xff, 0xff000000)
                         else:
                             raise ValueNotFoundError
                     else:
@@ -449,14 +494,14 @@ class BinaryData(object):
                     simm7 <<= shift
                     if simm7 != self.value:
                         raise ValueNotFoundError
-                    imm7 = self.imm(7)
+                    imm7 = self._imm(7)
                     self.patch_value_expression = imm7.sign_extend(self.bits-7) << shift
                     self.patch_bytes_expression = claripy.Concat(
                             BVV((armins & 0xffc00000) >> 22, 10),
                             imm7,
                             BVV(armins & 0x7fff, 15)
                         )
-                    self.test_values = (-0x40 << shift, 0x3f << shift)
+                    self._test_values = (-0x40 << shift, 0x3f << shift)
                 elif (armins & 0x3f800000 == 0x39000000) or \
                      (armins & 0x3f800000 == 0x39800000 and \
                           ((armins >> 30) | ((armins >> 22) & 1)) in (4, 2, 3, 0, 1)):
@@ -468,14 +513,14 @@ class BinaryData(object):
                     offs <<= shift
                     if offs != self.value:
                         raise ValueNotFoundError
-                    imm12 = self.imm(12)
+                    imm12 = self._imm(12)
                     self.patch_value_expression = imm12.zero_extend(self.bits-12) << shift
                     self.patch_bytes_expression = claripy.Concat(
                             BVV((armins & 0xffc00000) >> 22, 10),
                             imm12,
                             BVV(armins & 0x3ff, 10)
                         )
-                    self.test_values = (1 << shift, 0xfff << shift)
+                    self._test_values = (1 << shift, 0xfff << shift)
                 elif armins & 0x1f000000 == 0x11000000:
                     # ADD/SUB imm
                     # line 2403
@@ -487,8 +532,8 @@ class BinaryData(object):
                     imm12 <<= 12*shift
                     if imm12 != self.value:
                         raise ValueNotFoundError
-                    shift = self.imm(1, 'shift')
-                    imm12 = self.imm(12)
+                    shift = self._imm(1, 'shift')
+                    imm12 = self._imm(12)
                     shift_full = shift.zero_extend(self.bits-1)*12
                     self.patch_value_expression = imm12.zero_extend(self.bits-12) << shift_full
                     self.patch_bytes_expression = claripy.Concat(
@@ -498,7 +543,7 @@ class BinaryData(object):
                             imm12,
                             BVV(armins & 0x3ff, 10)
                         )
-                    self.test_values = (1, 0xfff, 0xfff000)
+                    self._test_values = (1, 0xfff, 0xfff000)
                 elif armins & 0x3fa00000 == 0x38000000:
                     # LDUR/STUR
                     # Line 4680
@@ -507,14 +552,14 @@ class BinaryData(object):
                     imm9 = resign_int(imm9, 9)
                     if imm9 != self.value:
                         raise ValueNotFoundError
-                    imm9 = self.imm(9)
+                    imm9 = self._imm(9)
                     self.patch_value_expression = imm9.sign_extend(self.bits-9)
                     self.patch_bytes_expression = claripy.Concat(
                             BVV(armins >> 21, 11),
                             imm9,
                             BVV(armins & 0xfff, 12)
                         )
-                    self.test_values = (-0x100, 0xff)
+                    self._test_values = (-0x100, 0xff)
 
                 else:
                     raise ValueNotFoundError
@@ -523,8 +568,8 @@ class BinaryData(object):
             if not self.sanity_check():
                 raise ValueNotFoundError
         else:
-            insn = self.string_to_insn(self.insbytes)
-            insn = BVV(insn, self.inslen*8)
+            insn = self._string_to_insn(self._insbytes)
+            insn = BVV(insn, self._inslen*8)
             for word_size in (64, 32, 16, 8):
                 if word_size > self.bits:
                     continue
@@ -532,7 +577,7 @@ class BinaryData(object):
                     result = insn[bit_offset+word_size-1:bit_offset]
                     result = result.sign_extend(self.bits-word_size)
                     if claripy.is_true(result == self.value):
-                        imm = self.imm(word_size)
+                        imm = self._imm(word_size)
                         self.patch_value_expression = imm.sign_extend(self.bits-word_size)
                         if bit_offset + word_size >= insn.length:
                             acc = imm
@@ -541,18 +586,18 @@ class BinaryData(object):
                         if bit_offset != 0:
                             acc = claripy.Concat(acc, insn[bit_offset-1:0])
                         self.patch_bytes_expression = acc
-                        self.test_values = (-(1 << word_size) >> 1, ((1 << word_size) >> 1) - 1)
+                        self._test_values = (-(1 << word_size) >> 1, ((1 << word_size) >> 1) - 1)
 
                         if self.sanity_check():
                             break   # found
 
-                    if self.angr.arch.name == 'PPC64':
+                    if self._project.arch.name == 'PPC64':
                         # On PPC64, the lowest two bits of immediate values can be used for other things
                         # Mask those out
                         result = (result & ~3).sign_extend(self.bits-word_size)
                         if not claripy.is_true(result == self.value):
                             continue
-                        imm = self.imm(word_size-2)
+                        imm = self._imm(word_size-2)
                         self.patch_value_expression = claripy.Concat(
                                 imm,
                                 BVV(0, 2)
@@ -563,7 +608,7 @@ class BinaryData(object):
                             acc = claripy.Concat(insn[insn.length-1:bit_offset+word_size], imm)
                         acc = claripy.Concat(acc, insn[bit_offset+1:0])
                         self.patch_bytes_expression = acc
-                        self.test_values = (-(1 << word_size) >> 1, ((1 << word_size) >> 1) - 4)
+                        self._test_values = (-(1 << word_size) >> 1, ((1 << word_size) >> 1) - 4)
                         if self.sanity_check():
                             break   # found
                 else:
@@ -580,34 +625,34 @@ class BinaryData(object):
     def sanity_check(self):
         # make sure I programmed the expression generation correctly
         assert self.patch_value_expression.length == self.bits
-        assert self.patch_bytes_expression.length == self.inslen*8
+        assert self.patch_bytes_expression.length == self._inslen*8
         # Prerequisite
-        m = self.path[:]
+        m = self._path[:]
         try:
-            basic = vexutils.get_from_path(self.insvex, m)
+            basic = vexutils.get_from_path(self._insvex, m)
         except ValueNotFoundError:
             raise FuzzingAssertionFailure("Can't follow given path!")
         m[-1] = 'size'
-        size = vexutils.get_from_path(self.insvex, m)
+        size = vexutils.get_from_path(self._insvex, m)
         if basic != self.unsigned_value:
             raise FuzzingAssertionFailure("Can't extract known value from path!")
         # Get challengers
-        for challenger in self.test_values:
+        for challenger in self._test_values:
             try:
-                newblock = self.angr.factory.block(
+                newblock = self._project.factory.block(
                         self.addr,
-                        insn_bytes=self.get_patched_instruction(challenger),
+                        insn_bytes=self._get_patched_instruction(challenger),
                         opt_level=1
                     ).vex
             except PyVEXError:
                 return False
             okay = (basic, unsign_int(challenger, size))
             try:
-                if vexutils.get_from_path(newblock, self.path) != okay[1]:
+                if vexutils.get_from_path(newblock, self._path) != okay[1]:
                     return False
             except ValueNotFoundError:
                 return False
-            for a, b in vexutils.equals(self.insvex, newblock):
+            for a, b in vexutils.equals(self._insvex, newblock):
                 if a == b:
                     continue
                 if (a, b) == okay:
@@ -617,20 +662,7 @@ class BinaryData(object):
         # Success!
         return True
 
-    def get_patch_data(self, solver):
-        if self.already_patched:
-            return []
-        self.already_patched = True
-        patch_bytes = self.get_patched_instruction(solver=solver)
-        patch_value = solver.eval(self.patch_value_expression, 1)[0].signed
-        l.debug('Patching address %#x with value %#x', self.addr, patch_value)
-        if patch_bytes == self.insbytes:
-            return []
-        physaddr = self.angr.loader.main_bin.addr_to_offset(self.addr)
-        if self.armthumb: physaddr -= 1
-        return [(physaddr, patch_bytes)]
-
-    def get_patched_instruction(self, value=None, solver=None):
+    def _get_patched_instruction(self, value=None, solver=None):
         if not (value is None) ^ (solver is None):
             raise ValueError('Must provide a value xor a solver!')
         if value is not None:
@@ -640,50 +672,50 @@ class BinaryData(object):
             insn_int = solver.eval(self.patch_bytes_expression, 1)[0].value
         except claripy.UnsatError:
             raise ValueNotFoundError('Unsat on solve!')
-        return self.insn_to_string(insn_int)
+        return self._insn_to_string(insn_int)
 
-    def string_to_insn(self, string):
-        if self.arm:
-            if self.armthumb:
+    def _string_to_insn(self, string):
+        if self._arm:
+            if self._armthumb:
                 armins = 0
-                for i in xrange(0, self.inslen, 2):
+                for i in xrange(0, self._inslen, 2):
                     armins <<= 16
-                    armins |= struct.unpack(self.angr.arch.struct_fmt(16), string[i:i+2])[0]
+                    armins |= struct.unpack(self._project.arch.struct_fmt(16), string[i:i+2])[0]
                 return armins
             else:
-                return struct.unpack(self.angr.arch.struct_fmt(32), string)[0]
+                return struct.unpack(self._project.arch.struct_fmt(32), string)[0]
         else:
             insn = 0
-            biter = string if self.angr.arch.memory_endness == 'Iend_BE' else reversed(string)
+            biter = string if self._project.arch.memory_endness == 'Iend_BE' else reversed(string)
             for c in biter:
                 insn <<= 8
                 insn |= ord(c)
             return insn
 
-    def insn_to_string(self, insn):
-        if self.arm:
-            if self.armthumb:
+    def _insn_to_string(self, insn):
+        if self._arm:
+            if self._armthumb:
                 armstr = ''
-                for _ in xrange(0, self.inslen, 2):
-                    armstr = struct.pack(self.angr.arch.struct_fmt(16), insn & 0xffff) + armstr
+                for _ in xrange(0, self._inslen, 2):
+                    armstr = struct.pack(self._project.arch.struct_fmt(16), insn & 0xffff) + armstr
                     insn >>= 16
                 return armstr
             else:
-                return struct.pack(self.angr.arch.struct_fmt(32), insn)
+                return struct.pack(self._project.arch.struct_fmt(32), insn)
         else:
             string = ''
-            if self.angr.arch.memory_endness == 'Iend_BE':
-                for _ in xrange(self.inslen):
+            if self._project.arch.memory_endness == 'Iend_BE':
+                for _ in xrange(self._inslen):
                     string = chr(insn & 0xFF) + string
                     insn >>= 8
             else:
-                for _ in xrange(self.inslen):
+                for _ in xrange(self._inslen):
                     string += chr(insn & 0xFF)
                     insn >>= 8
             return string
 
-    def __str__(self):
-        return '%d at %#0.8x' % (self.value, self.addr)
+    def __repr__(self):
+        return '<BinaryData for %#0.8x: %d>' % (self.addr, self.value)
 
 class BinaryDataConglomerate:
     def __init__(self, addr, value, symval, access_flags):
@@ -705,7 +737,7 @@ class BinaryDataConglomerate:
             self.constraints.append(bindata.patch_value_expression == sym_value)
 
     def get_patch_data(self, solver):
-        return sum((x.get_patch_data(solver) for x in self.dependencies), [])
+        return sum((x.get_patch_data(solver=solver) for x in self.dependencies), [])
 
     def apply_constraints(self, solver):
         for x in self.constraints:
