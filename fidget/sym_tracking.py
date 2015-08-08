@@ -367,10 +367,10 @@ class SmartExpression:
             if 'F' in self.type:
                 if self.size == 32:
                     self.cleanval = claripy.FPV(vexpression.value, claripy.fp.FSORT_FLOAT)
-                    self.dirtyval = claripy.FP('%x_%d' % (addr, path[1]), claripy.fp.FSORT_FLOAT)
+                    self.dirtyval = claripy.FloatingPoint('%x_%d' % (addr, path[1]), claripy.fp.FSORT_FLOAT)
                 elif self.size == 64:
                     self.cleanval = claripy.FPV(vexpression.value, claripy.fp.FSORT_DOUBLE)
-                    self.dirtyval = claripy.FP('%x_%d' % (addr, path[1]), claripy.fp.FSORT_DOUBLE)
+                    self.dirtyval = claripy.FloatingPoint('%x_%d' % (addr, path[1]), claripy.fp.FSORT_DOUBLE)
                 else:
                     raise FidgetUnsupportedError("Why is there a FP const of size %d" % self.size)
             else:
