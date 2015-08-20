@@ -1,8 +1,8 @@
-import os, shutil
+import os, shutil, pickle
+from angr import Project
 import claripy
 
 from .stack_magic import Stack
-from .executable import Executable
 from .sym_tracking import find_stack_tags
 from .errors import FidgetError, FidgetUnsupportedError
 
@@ -16,7 +16,25 @@ class Fidget(object):
         self._stack_patch_data = []
         if cfg_options is None:
             cfg_options = {'enable_symbolic_back_traversal': True}
-        self._binrepr = Executable(infile, cache, cfg_options, debugangr)
+        cachename = infile + '.fcfg'
+
+        l.info("Loading %s", infile)
+        try:
+            if not cache: raise IOError('fuck off')
+            fh = open(cachename, 'rb')
+            self.project, self.cfg = pickle.load(fh)
+            fh.close()
+        except (IOError, OSError, pickle.UnpicklingError):
+            if debugangr:
+                import ipdb; ipdb.set_trace()
+            self.project = Project(infile, load_options={'auto_load_libs': False})
+            self.cfg = self.project.analyses.CFG(**cfg_options)
+            try:
+                fh = open(cachename, 'wb')
+                pickle.dump((self.project, self.cfg), fh)
+                fh.close()
+            except (IOError, OSError, pickle.PicklingError):
+                l.exception('Error pickling CFG')
 
     def apply_patches(self, outfile=None):
         tempfile = '/tmp/fidget-%d' % os.getpid()
@@ -58,13 +76,13 @@ class Fidget(object):
         self._stack_patch_data = []
 
         # Loop through all the functions as found by angr's CFG
-        funcs = self._binrepr.funcman.functions
+        funcs = self.cfg.function_manager.functions
 
         # Find the real _start on MIPS so we don't touch it
         do_not_touch = None
-        if self._binrepr.angr.arch.name == 'MIPS32':
-            for context in self._binrepr.cfg.get_all_nodes(self._binrepr.angr.entry):
-                for succ, jumpkind in self._binrepr.cfg.get_successors_and_jumpkind(context):
+        if self.project.arch.name == 'MIPS32':
+            for context in self.cfg.get_all_nodes(self.project.entry):
+                for succ, jumpkind in self.cfg.get_successors_and_jumpkind(context):
                     if jumpkind == 'Ijk_Call':
                         do_not_touch = succ.addr
                         l.debug('Found MIPS entry point stub target %#x', do_not_touch)
@@ -74,7 +92,7 @@ class Fidget(object):
         totals = 0
         for funcaddr, func in funcs.iteritems():
             # But don't touch _start. Seriously.
-            if funcaddr == self._binrepr.angr.entry:
+            if funcaddr == self.project.entry:
                 l.debug('Skipping entry point')
                 continue
 
@@ -85,24 +103,24 @@ class Fidget(object):
                 continue
 
             # Don't try to patch simprocedures
-            if self._binrepr.angr.is_hooked(funcaddr):
-                l.debug("Skipping simprocedure %s", self._binrepr.angr._sim_procedures[funcaddr][0].__name__)
+            if self.project.is_hooked(funcaddr):
+                l.debug("Skipping simprocedure %s", self.project._sim_procedures[funcaddr][0].__name__)
                 continue
 
             # Don't touch functions not in any segment
-            if self._binrepr.angr.loader.main_bin.find_segment_containing(funcaddr) is None:
+            if self.project.loader.main_bin.find_segment_containing(funcaddr) is None:
                 l.debug('Skipping function %s not mapped', func.name)
                 continue
 
             # If the text section exists, only patch functions in it
-            if '.text' not in self._binrepr.angr.loader.main_bin.sections_map:
-                sec = self._binrepr.angr.loader.main_bin.find_section_containing(funcaddr)
+            if '.text' not in self.project.loader.main_bin.sections_map:
+                sec = self.project.loader.main_bin.find_section_containing(funcaddr)
                 if sec is None or sec.name != '.text':
                     l.debug('Skipping function %s not in .text', func.name)
                     continue
 
             # Don't patch functions in the PLT
-            if funcaddr in self._binrepr.angr.loader.main_bin.plt.values():
+            if funcaddr in self.project.loader.main_bin.plt.values():
                 l.debug('Skipping function %s in PLT', func.name)
                 continue
 
@@ -112,7 +130,7 @@ class Fidget(object):
                 continue
 
             # Check if the function starts at a SimProcedure (edge case)
-            if self._binrepr.cfg.get_any_node(funcaddr).simprocedure_name is not None:
+            if self.cfg.get_any_node(funcaddr).simprocedure_name is not None:
                 l.debug('Skipping function %s starting with a SimProcedure', func.name)
 
             # Check if the function is white/blacklisted
@@ -138,8 +156,8 @@ class Fidget(object):
         alloc_op = None   # the instruction that performs a stack allocation
         dealloc_ops = []  # the instructions that perform a stack deallocation
         least_alloc = None # the smallest allocation known
-        stack = Stack(self._binrepr, solver, 0)
-        for tag, bindata in find_stack_tags(self._binrepr, funcaddr):
+        stack = Stack(self.project, solver, 0)
+        for tag, bindata in find_stack_tags(self.project, self.cfg, funcaddr):
             if tag == '':
                 continue
             elif tag.startswith('ABORT'):
@@ -167,8 +185,8 @@ class Fidget(object):
             l.info('\tFunction does not appear to have a stack frame (No alloc)')
             return
 
-        if has_return and least_alloc.value != self._binrepr.angr.arch.bytes if self._binrepr.angr.arch.call_pushes_ret else 0:
-            l.info('\tFunction does not ever deallocate stack frame (Least alloc is %d for %s)', -least_alloc.value, self._binrepr.angr.arch.name)
+        if has_return and least_alloc.value != self.project.arch.bytes if self.project.arch.call_pushes_ret else 0:
+            l.info('\tFunction does not ever deallocate stack frame (Least alloc is %d for %s)', -least_alloc.value, self.project.arch.name)
             return
 
         if has_return and len(dealloc_ops) == 0:
@@ -181,12 +199,12 @@ class Fidget(object):
 
     # Find the lowest sp-access that isn't an argument to the next function
     # By starting at accesses to [esp] and stepping up a word at a time
-        if self._binrepr.angr.arch.name == 'X86':
+        if self.project.arch.name == 'X86':
             last_addr = -stack.conc_size
             for var in stack:
                 if var.conc_addr != last_addr:
                     break
-                last_addr += self._binrepr.angr.arch.bytes
+                last_addr += self.project.arch.bytes
                 #var.special_top = True
                 #l.debug("Marked TOP addr %d as special", var.conc_addr)
 
@@ -198,7 +216,7 @@ class Fidget(object):
                 last_addr = var.conc_addr
             if var.conc_addr != last_addr:
                 break
-            last_addr -= self._binrepr.angr.arch.bytes
+            last_addr -= self.project.arch.bytes
             var.special_bottom = True
             l.debug("Marked BOTTOM addr %d as special", var.conc_addr)
 

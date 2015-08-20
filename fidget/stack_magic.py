@@ -73,13 +73,13 @@ class Variable(object):
         return sum((access.get_patches(solver) for access in self.accesses), [])
 
 class Stack():
-    def __init__(self, binrepr, solver, stack_size):
+    def __init__(self, project, solver, stack_size):
         self.variables = {} # all the variables, indexed by address
         self.addr_list = [] # all the addresses, kept sorted
-        self.binrepr = binrepr
+        self.project = project
         self.solver = solver
         self.conc_size = stack_size
-        self.sym_size = claripy.BV("stack_size", binrepr.angr.arch.bits)
+        self.sym_size = claripy.BV("stack_size", project.arch.bits)
         self.unsafe_constraints = []
 
     def __iter__(self):
@@ -97,7 +97,7 @@ class Stack():
 
         if access.conc_addr not in self.variables:
             name_prefix = 'var' if access.conc_addr < 0 else 'arg'
-            sym_addr = claripy.BV('%s_%x' % (name_prefix, abs(access.conc_addr)), self.binrepr.angr.arch.bits)
+            sym_addr = claripy.BV('%s_%x' % (name_prefix, abs(access.conc_addr)), self.project.arch.bits)
             self.add_variable(Variable(access.conc_addr, sym_addr))
         self.variables[access.conc_addr].add_access(access)
 
@@ -127,7 +127,7 @@ class Stack():
 
     def sym_link(self, safe=False):
         self.solver.add(self.sym_size >= self.conc_size)
-        self.solver.add(self.sym_size % (self.binrepr.angr.arch.bytes) == 0)
+        self.solver.add(self.sym_size % (self.project.arch.bytes) == 0)
         self.unsafe_constraints.append(self.sym_size > self.conc_size)
 
         first = self.variables[self.addr_list[0]]
@@ -136,8 +136,8 @@ class Stack():
         for var, next_var in zip(var_list, var_list[1:] + [None]):
             var.sym_link(self.solver, self)
             self.unsafe_constraints.extend(var.unsafe_constraints)
-            if var.conc_addr % (self.binrepr.angr.arch.bytes) == 0:
-                self.solver.add(var.sym_addr % (self.binrepr.angr.arch.bytes) == 0)
+            if var.conc_addr % (self.project.arch.bytes) == 0:
+                self.solver.add(var.sym_addr % (self.project.arch.bytes) == 0)
 
             if var.special:
                 # We're one of the args that needs to stay fixed relative somewhere
@@ -165,7 +165,7 @@ class Stack():
             var = self.variables[self.addr_list[i]]
             if var.special:
                 continue
-            if var.conc_addr % (self.binrepr.angr.arch.bytes) != 0:
+            if var.conc_addr % (self.project.arch.bytes) != 0:
                 self.merge_up(i)
                 i -= 1
             elif var.access_flags & 8:

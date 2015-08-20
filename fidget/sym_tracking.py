@@ -53,8 +53,8 @@ ROUNDING_IROPS = ('Iop_AddF64', 'Iop_SubF64', 'Iop_MulF64', 'Iop_DivF64',
                   'Iop_Add32Fx8', 'Iop_Sub32Fx8', 'Iop_Mul32Fx8', 'Iop_Div32Fx8'
                  )
 
-def find_stack_tags(binrepr, funcaddr):
-    queue = [BlockState(binrepr, funcaddr)]
+def find_stack_tags(project, cfg, funcaddr):
+    queue = [BlockState(project, funcaddr)]
     headcache = set()
     cache = set()
     while len(queue) > 0:
@@ -79,7 +79,7 @@ def find_stack_tags(binrepr, funcaddr):
         headcache.add(blockstate.addr)
 
         for addr in mark_addrs:
-            if addr != funcaddr and addr in binrepr.funcman.functions:
+            if addr != funcaddr and addr in cfg.function_manager.functions:
                 l.warning("\tThis function jumps into another function (%#x). Abort.", addr)
                 yield ("ABORT_HIT_OTHER_FUNCTION_HEAD", addr)
                 return
@@ -155,17 +155,17 @@ def find_stack_tags(binrepr, funcaddr):
                     raise FidgetUnsupportedError("Unknown vex instruction???", stmt)
 
         if block.jumpkind == 'Ijk_Call' or block.jumpkind in OK_CONTINUE_JUMPS:
-            if block.jumpkind == 'Ijk_Call' and binrepr.angr.arch.call_pushes_ret:
+            if block.jumpkind == 'Ijk_Call' and project.arch.call_pushes_ret:
                 # Pop the return address off the stack and keep going
-                stack = blockstate.get_reg(binrepr.angr.arch.sp_offset, binrepr.angr.arch.bits)
+                stack = blockstate.get_reg(project.arch.sp_offset, project.arch.bits)
                 popped = stack.deps[0] if stack.deps[0].stack_addr else stack.deps[1]
-                blockstate.regs[binrepr.angr.arch.sp_offset] = popped
+                blockstate.regs[project.arch.sp_offset] = popped
                 # Discard the last two tags -- they'll be an alloc and an access for the call
                 # (the push and the retaddr)
                 blockstate.tags = blockstate.tags[:-2]
 
-            for context in binrepr.cfg.get_all_nodes(blockstate.addr):
-                for node, jumpkind in binrepr.cfg.get_successors_and_jumpkind( \
+            for context in cfg.get_all_nodes(blockstate.addr):
+                for node, jumpkind in cfg.get_successors_and_jumpkind( \
                                         context, \
                                         excluding_fakeret=False):
                     if jumpkind not in OK_CONTINUE_JUMPS:
@@ -175,7 +175,7 @@ def find_stack_tags(binrepr, funcaddr):
                     elif node.simprocedure_name is not None:
                         continue
                     elif node.addr in cache:
-                        for succ, jumpkind in binrepr.cfg.get_successors_and_jumpkind(node, excluding_fakeret=False):
+                        for succ, jumpkind in cfg.get_successors_and_jumpkind(node, excluding_fakeret=False):
                             if jumpkind in OK_CONTINUE_JUMPS and succ.addr not in cache and succ.simprocedure_name is None:
                                 queue.append(blockstate.copy(succ.addr))
                     else:
@@ -225,29 +225,29 @@ class AccessType:       # pylint: disable=no-init
     UNINITREAD = 8
 
 class BlockState:
-    def __init__(self, binrepr, addr):
+    def __init__(self, project, addr):
         self.addr = addr
-        self.binrepr = binrepr
+        self.project = project
         self.regs = {}
         self.stack_cache = {}
         self.tags = []
         self.tempstore = None
-        stackexp = ConstExpression(claripy.BVV(0, binrepr.angr.arch.bits), 'Ity_I%d' % binrepr.angr.arch.bits, True)
+        stackexp = ConstExpression(claripy.BVV(0, project.arch.bits), 'Ity_I%d' % project.arch.bits, True)
         stackexp.stack_addr = True
         stackexp.addr = addr
-        self.regs[self.binrepr.angr.arch.sp_offset] = stackexp
-        if binrepr.angr.arch.name == 'AMD64':
+        self.regs[self.project.arch.sp_offset] = stackexp
+        if project.arch.name == 'AMD64':
             self.regs[144] = ConstExpression.default('Ity_I64')
             self.regs[156] = ConstExpression.default('Ity_I64')
-        elif binrepr.angr.arch.name == 'X86':
+        elif project.arch.name == 'X86':
             self.regs[216] = ConstExpression.default('Ity_I32')
             self.regs[884] = ConstExpression.default('Ity_I32')
-        elif binrepr.angr.arch.name.startswith('ARM'):
+        elif project.arch.name.startswith('ARM'):
             self.regs[392] = ConstExpression.default('Ity_I32')
             self.regs[392].it_taint = True
 
     def copy(self, newaddr):
-        out = BlockState(self.binrepr, newaddr)
+        out = BlockState(self.project, newaddr)
 
         # copy over all registers that hold pointers to the stack
         for offset, val in self.regs.iteritems():
@@ -257,7 +257,7 @@ class BlockState:
 
     def lift(self, addr=None, **options):
         if addr is None: addr = self.addr
-        return self.binrepr.angr.factory.block(addr, **options).vex
+        return self.project.factory.block(addr, **options).vex
 
     def load_tempstore(self, tempstore):
         self.tempstore = tempstore
@@ -267,10 +267,10 @@ class BlockState:
             ty = 'Ity_I%d' % ty
 
         if not regnum in self.regs:
-            if 'F' in ty or vexutils.extract_int(ty) > self.binrepr.angr.arch.bits:
+            if 'F' in ty or vexutils.extract_int(ty) > self.project.arch.bits:
                 self.regs[regnum] = ConstExpression.default(ty)
             else:
-                self.regs[regnum] = ConstExpression.default('Ity_I%d' % self.binrepr.angr.arch.bits)
+                self.regs[regnum] = ConstExpression.default('Ity_I%d' % self.project.arch.bits)
             return self.regs[regnum].truncate(ty)
 
         if 'F' in self.regs[regnum].type:
@@ -293,10 +293,13 @@ class BlockState:
                     return val
             return ConstExpression.default(ty)
         cleanestval = addr.cleanval.model.value
-        if cleanestval in self.binrepr.angr.loader.memory and 'F' not in ty:    # TODO: support this
+        if cleanestval in self.project.loader.memory and 'F' not in ty:    # TODO: support this
             size_bytes = vexutils.extract_int(ty)/8
-            strval = ''.join(self.binrepr.angr.loader.memory[cleanestval + i] for i in xrange(size_bytes))
-            return ConstExpression(claripy.BVV(self.binrepr.unpack_format(strval, size_bytes), size_bytes*8), ty, True)
+            strval = ''.join(self.project.loader.memory[cleanestval + i] for i in xrange(size_bytes))
+            if self.project.arch.memory_endness == 'Iend_LE':
+                strval = str(reversed(strval))
+            intval = int(strval.encode('hex'), 16)
+            return ConstExpression(claripy.BVV(intval, size_bytes*8), ty, True)
         return ConstExpression.default(ty)
 
     def access(self, addr_expression, access_type):
@@ -308,13 +311,13 @@ class BlockState:
         if vextatement.tag == 'Ist_WrTmp':
             self.tempstore.write(vextatement.tmp, expression)
         elif vextatement.tag == 'Ist_Put':
-            if 'F' in expression.type or expression.size > self.binrepr.angr.arch.bits:
+            if 'F' in expression.type or expression.size > self.project.arch.bits:
                 self.regs[vextatement.offset] = expression
             else:
                 if not vextatement.offset in self.regs:
-                    self.regs[vextatement.offset] = ConstExpression.default('Ity_I%d' % self.binrepr.angr.arch.bits)
+                    self.regs[vextatement.offset] = ConstExpression.default('Ity_I%d' % self.project.arch.bits)
                 self.regs[vextatement.offset] = expression.overwrite(self.regs[vextatement.offset])
-            if vextatement.offset == self.binrepr.angr.arch.sp_offset:
+            if vextatement.offset == self.project.arch.sp_offset:
                 if not expression.is_concrete:
                     l.warning("This function appears to use alloca(). Abort.")
                     self.tags.append(('ABORT_ALLOCA', expression.make_bindata(0)))
@@ -332,7 +335,7 @@ class BlockState:
 
     def end(self):
         for offset, value in self.regs.iteritems():
-            if offset in (self.binrepr.angr.arch.sp_offset, self.binrepr.angr.arch.bp_offset, self.binrepr.angr.arch.ip_offset):
+            if offset in (self.project.arch.sp_offset, self.project.arch.bp_offset, self.project.arch.ip_offset):
                 continue
             self.access(value, AccessType.POINTER)
 
@@ -342,7 +345,7 @@ class SmartExpression:
         self.vexpression = vexpression
         self.addr = addr
         self.path = path
-        self.binrepr = self.blockstate.binrepr
+        self.project = self.blockstate.project
         self.deps = []
         self.stack_addr = False
         self.is_concrete = False
@@ -472,7 +475,7 @@ class SmartExpression:
         if self.rootval:
             try:
                 binary_data = BinaryData(
-                        self.binrepr.angr,
+                        self.project,
                         self.addr,
                         self.cleanval.model.value,
                         path=self.path + ['con', 'value']
@@ -503,7 +506,7 @@ class SmartExpression:
         out.blockstate = smaller.blockstate
         out.addr = smaller.addr # ??? what will be done with this
         out.path = smaller.path
-        out.binrepr = out.blockstate.binrepr
+        out.project = out.blockstate.project
         out.stack_addr = larger.stack_addr # sketchy...
         out.is_concrete = smaller.is_concrete and larger.is_concrete
         out.it_taint = False
@@ -529,7 +532,7 @@ class SmartExpression:
         out.blockstate = self.blockstate
         out.addr = self.addr # ??? what will be done with this
         out.path = self.path
-        out.binrepr = out.blockstate.binrepr
+        out.project = out.blockstate.project
         out.stack_addr = False
         out.is_concrete = self.is_concrete
         out.it_taint = False
