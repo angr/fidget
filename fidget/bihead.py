@@ -14,6 +14,7 @@ class BiHead(claripy.Bits):
 
         self.cleanval = cleanval
         self.dirtyval = dirtyval
+        self._hash = hash((cleanval, dirtyval))
 
     def __dir__(self):
         return dir(self.cleanval) + ['cleanval', 'dirtyval']
@@ -21,15 +22,33 @@ class BiHead(claripy.Bits):
     def __repr__(self):
         return 'BiHead(%s, %s)' % (repr(self.cleanval), repr(self.dirtyval))
 
-    def __getattr__(self, k):
-        if k in ('cleanval', 'dirtyval', 'length'):
+    def __getattribute__(self, k):
+        if k == 'op':
+            return 'I'      # claim to be an identity AST
+        if k in ('cleanval', 'dirtyval', 'length', '_hash', '__init__', 'make_uuid') or (k in dir(BiHead) and k not in dir(claripy.Bits)):
             return object.__getattribute__(self, k)
-        cleanres, dirtyres = getattr(self.cleanval, k), getattr(self.dirtyval, k)
-        if hasattr(cleanres, '__call__'):
-            return self.bi_wrap(cleanres, dirtyres)
-        if cleanres == dirtyres:
-            return cleanres
-        assert False
+        if hasattr(self.cleanval, k):
+            cleanres, dirtyres = getattr(self.cleanval, k), getattr(self.dirtyval, k)
+            if hasattr(cleanres, '__call__'):
+                return self.bi_wrap(cleanres, dirtyres)
+            if isinstance(cleanres, claripy.Bits) and type(cleanres) == type(dirtyres):
+                return BiHead(cleanres, dirtyres)
+            if cleanres == dirtyres:
+                return cleanres
+
+        if k in dir(BiHead):
+            return object.__getattribute__(self, k)
+
+    @property
+    def symbolic(self):
+        return True
+
+    @property
+    def reversed(self):
+        return BiHead(self.cleanval.reversed, self.dirtyval.reversed)
+
+    def make_uuid(self):
+        pass
 
     @staticmethod
     def op_wrap(op):
