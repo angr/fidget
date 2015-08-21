@@ -1,14 +1,14 @@
-# Home of find_stack_tags and the BlockState and SmartExpression classes
-# Basically stuff for tracking data flow through a basic block and generating tags for it
-
 from angr import AngrMemoryError
 import pyvex
 import claripy
 
 from .binary_data import BinaryData, BinaryDataConglomerate
-from .errors import FidgetError, FidgetUnsupportedError, ValueNotFoundError
+from .stack_magic import Struct
+from .errors import FidgetError, FidgetUnsupportedError, ValueNotFoundError, FidgetAnalysisFailure
 from . import vexutils
 from simuvex import operations, SimOperationError
+
+from collections import defaultdict
 
 import logging
 l = logging.getLogger('fidget.sym_tracking')
@@ -53,142 +53,245 @@ ROUNDING_IROPS = ('Iop_AddF64', 'Iop_SubF64', 'Iop_MulF64', 'Iop_DivF64',
                   'Iop_Add32Fx8', 'Iop_Sub32Fx8', 'Iop_Mul32Fx8', 'Iop_Div32Fx8'
                  )
 
-def find_stack_tags(project, cfg, funcaddr):
-    queue = [BlockState(project, funcaddr)]
-    headcache = set()
-    cache = set()
-    while len(queue) > 0:
-        blockstate = queue.pop(0)
-        if blockstate.addr in headcache:
-            continue
-        l.debug("Analyzing block 0x%x", blockstate.addr)
+class StructureAnalysis(object):
+    def __init__(self,
+                 project,
+                 cfg=None,
+                 functions_list=None,
+                 chase_structs=False):
+        self.project = project
+        self.cfg = cfg
+        self.functions_list = functions_list
+        self.chase_structs = chase_structs
 
-        try:
-            block = blockstate.lift(opt_level=1, max_size=400)
-        except AngrMemoryError:
-            continue
+        self.structures = {}
+        self.stack_frames = defaultdict(lambda: None)
 
-        mark_addrs = [
-                        s.addr + s.delta
-                        for s in block.statements
-                        if isinstance(s, pyvex.IRStmt.IMark)
-                     ]
-        if block.jumpkind == 'Ijk_NoDecode':
-            l.error("Block at %#x ends in NoDecode", blockstate.addr)
-            mark_addrs.pop()
-        headcache.add(blockstate.addr)
+        if self.cfg is None:
+            self.cfg = project.analyses.CFG(enable_symbolic_back_traversal=True)
+        if self.functions_list is None:
+            self.functions_list = self.get_real_functions(self.cfg)
 
-        for addr in mark_addrs:
-            if addr != funcaddr and addr in cfg.function_manager.functions:
-                l.warning("\tThis function jumps into another function (%#x). Abort.", addr)
-                yield ("ABORT_HIT_OTHER_FUNCTION_HEAD", addr)
-                return
-            cache.add(addr)
+        for func in self.functions_list:
+            try:
+                struct = self.analyze_stack(func._addr)
+            except FidgetAnalysisFailure:
+                pass
+            else:
+                self.add_struct(struct)
+                self.stack_frames[func._addr] = struct.name
 
-            insnblock = blockstate.lift(addr, num_inst=1, max_size=400, opt_level=1)
-            temps = TempStore(insnblock.tyenv)
-            blockstate.load_tempstore(temps)
-            stmtgen = enumerate(insnblock.statements)
-            for _, stmt in stmtgen:
-                if isinstance(stmt, pyvex.IRStmt.IMark): break
+        if chase_structs:
+            raise FidgetUnsupportedError("lmao what")
 
-            for stmt_idx, stmt in stmtgen:
-                path = ['statements', stmt_idx]
-                if stmt.tag in ('Ist_NoOp', 'Ist_AbiHint', 'Ist_MBE'):
-                    pass
+    def add_struct(self, struct):
+        self.structures[struct.name] = struct
 
-                elif stmt.tag == 'Ist_Exit':
-                    SmartExpression(blockstate, stmt.dst, addr, path + ['dst'])
-                    # Let the cfg take care of control flow!
+    @staticmethod
+    def get_real_functions(cfg):
+        project = cfg._project
+        out = []
 
-                elif stmt.tag in ('Ist_WrTmp', 'Ist_Store', 'Ist_Put'):
-                    this_expression = SmartExpression(blockstate, stmt.data, addr, path + ['data'])
-                    blockstate.assign(stmt, this_expression, stmt_idx)
+        # Find the real _start on MIPS so we don't touch it
+        do_not_touch = None
+        if project.arch.name == 'MIPS32':
+            for context in cfg.get_all_nodes(project.entry):
+                for succ, jumpkind in cfg.get_successors_and_jumpkind(context):
+                    if jumpkind == 'Ijk_Call':
+                        do_not_touch = succ.addr
+                        l.debug('Found MIPS entry point stub target %#x', do_not_touch)
 
-                elif stmt.tag == 'Ist_LoadG':
-                    # Conditional loads. Lots of bullshit.
-                    addr_expression = SmartExpression(blockstate, stmt.addr, addr, path + ['addr'])
-                    blockstate.access(addr_expression, AccessType.READ)
+        for funcaddr, func in cfg.function_manager.functions.iteritems():
+            # But don't touch _start. Seriously.
+            if funcaddr == project.entry:
+                l.debug('Skipping entry point')
+                continue
 
-                    # load the actual data
-                    data_expression = blockstate.get_mem(addr_expression, stmt.cvt_types[0])
-                    # it then needs a type conversion applied to it
-                    cvt_data_expression = CustomExpression()
-                    cvt_data_expression.copy_to_self(data_expression)
-                    cvt_data_expression.type = stmt.cvt_types[1]
-                    conv_diff = vexutils.extract_int(stmt.cvt_types[1]) - vexutils.extract_int(stmt.cvt_types[0])
-                    if conv_diff != 0:
-                        if 'S' in stmt.cvt:
-                            cvt_data_expression.cleanval = cvt_data_expression.cleanval.sign_extend(conv_diff)
-                            cvt_data_expression.dirtyval = cvt_data_expression.dirtyval.sign_extend(conv_diff)
-                        else:
-                            cvt_data_expression.cleanval = cvt_data_expression.cleanval.zero_extend(conv_diff)
-                            cvt_data_expression.dirtyval = cvt_data_expression.dirtyval.zero_extend(conv_diff)
+            # On MIPS there's another function that's part of the entry point.
+            # Trying to mess with it will cause catastrope.
+            if funcaddr == do_not_touch:
+                l.debug('Skipping MIPS entry point stub target')
+                continue
 
-                    temps.write(stmt.dst, cvt_data_expression)
-                    SmartExpression(blockstate, stmt.guard, addr, path + ['guard'])
-                    SmartExpression(blockstate, stmt.alt, addr, path + ['alt'])
+            # Don't try to patch simprocedures
+            if project.is_hooked(funcaddr):
+                l.debug("Skipping simprocedure %s", project._sim_procedures[funcaddr][0].__name__)
+                continue
 
-                elif stmt.tag == 'Ist_StoreG':
-                    # Conditional store
-                    addr_expr = SmartExpression(blockstate, stmt.addr, addr, path + ['addr'])
-                    value_expr = SmartExpression(blockstate, stmt.data, addr, path + ['data'])
-                    blockstate.access(addr_expr, AccessType.WRITE)
-                    if addr_expr.stack_addr:
-                        blockstate.stack_cache[addr_expr.cleanval] = value_expr
-                    if value_expr.stack_addr:
-                        blockstate.access(value_expr, AccessType.POINTER)
+            # Don't touch functions not in any segment
+            if project.loader.main_bin.find_segment_containing(funcaddr) is None:
+                l.debug('Skipping function %s not mapped', func.name)
+                continue
 
-                    SmartExpression(blockstate, stmt.guard, addr, path + ['guard'])
+            # If the text section exists, only patch functions in it
+            if '.text' not in project.loader.main_bin.sections_map:
+                sec = project.loader.main_bin.find_section_containing(funcaddr)
+                if sec is None or sec.name != '.text':
+                    l.debug('Skipping function %s not in .text', func.name)
+                    continue
 
-                elif stmt.tag == 'Ist_PutI':    # haha no
-                    SmartExpression(blockstate, stmt.data, addr, path + ['data'])
-                elif stmt.tag == 'Ist_CAS':     # HA ha no
-                    if stmt.oldLo != 4294967295:
-                        blockstate.tempstore.default(stmt.oldLo)
-                    if stmt.oldHi != 4294967295:
-                        blockstate.tempstore.default(stmt.oldHi)
-                elif stmt.tag == 'Ist_Dirty':   # hahAHAHAH NO
-                    if stmt.tmp != 4294967295:
-                        blockstate.tempstore.default(stmt.tmp)
-                else:
-                    raise FidgetUnsupportedError("Unknown vex instruction???", stmt)
+            # Don't patch functions in the PLT
+            if funcaddr in project.loader.main_bin.plt.values():
+                l.debug('Skipping function %s in PLT', func.name)
+                continue
 
-        if block.jumpkind == 'Ijk_Call' or block.jumpkind in OK_CONTINUE_JUMPS:
-            if block.jumpkind == 'Ijk_Call' and project.arch.call_pushes_ret:
-                # Pop the return address off the stack and keep going
-                stack = blockstate.get_reg(project.arch.sp_offset, project.arch.bits)
-                popped = stack.deps[0] if stack.deps[0].stack_addr else stack.deps[1]
-                blockstate.regs[project.arch.sp_offset] = popped
-                # Discard the last two tags -- they'll be an alloc and an access for the call
-                # (the push and the retaddr)
-                blockstate.tags = blockstate.tags[:-2]
+            # If the CFG couldn't parse an indirect jump, avoid
+            if func.has_unresolved_jumps:
+                l.debug("Skipping function %s with unresolved jumps", func.name)
+                continue
 
-            for context in cfg.get_all_nodes(blockstate.addr):
-                for node, jumpkind in cfg.get_successors_and_jumpkind( \
-                                        context, \
-                                        excluding_fakeret=False):
-                    if jumpkind not in OK_CONTINUE_JUMPS:
-                        continue
-                    elif node.addr in headcache:
-                        continue
-                    elif node.simprocedure_name is not None:
-                        continue
-                    elif node.addr in cache:
-                        for succ, jumpkind in cfg.get_successors_and_jumpkind(node, excluding_fakeret=False):
-                            if jumpkind in OK_CONTINUE_JUMPS and succ.addr not in cache and succ.simprocedure_name is None:
-                                queue.append(blockstate.copy(succ.addr))
+            # Check if the function starts at a SimProcedure (edge case)
+            if cfg.get_any_node(funcaddr).simprocedure_name is not None:
+                l.debug('Skipping function %s starting with a SimProcedure', func.name)
+
+            # This function is APPROVED
+            out.append(func)
+
+        return out
+
+    def analyze_stack(self, funcaddr):
+        struct = Struct(self.project.arch, is_stack_frame=True)
+        queue = [BlockState(self.project, funcaddr)]
+        headcache = set()
+        cache = set()
+        while len(queue) > 0:
+            blockstate = queue.pop(0)
+            if blockstate.addr in headcache:
+                continue
+            l.debug("Analyzing block 0x%x", blockstate.addr)
+
+            try:
+                block = blockstate.lift(opt_level=1, max_size=400)
+            except AngrMemoryError:
+                continue
+
+            mark_addrs = [
+                            s.addr + s.delta
+                            for s in block.statements
+                            if isinstance(s, pyvex.IRStmt.IMark)
+                         ]
+            if block.jumpkind == 'Ijk_NoDecode':
+                l.error("Block at %#x ends in NoDecode", blockstate.addr)
+                mark_addrs.pop()
+            headcache.add(blockstate.addr)
+
+            for addr in mark_addrs:
+                if addr != funcaddr and addr in self.cfg.function_manager.functions:
+                    l.warning("\tThis function jumps into another function (%#x). Abort.", addr)
+                    raise FidgetAnalysisFailure
+                cache.add(addr)
+
+                insnblock = blockstate.lift(addr, num_inst=1, max_size=400, opt_level=1)
+                temps = TempStore(insnblock.tyenv)
+                blockstate.load_tempstore(temps)
+                stmtgen = enumerate(insnblock.statements)
+                for _, stmt in stmtgen:
+                    if isinstance(stmt, pyvex.IRStmt.IMark): break
+
+                for stmt_idx, stmt in stmtgen:
+                    path = ['statements', stmt_idx]
+                    if stmt.tag in ('Ist_NoOp', 'Ist_AbiHint', 'Ist_MBE'):
+                        pass
+
+                    elif stmt.tag == 'Ist_Exit':
+                        SmartExpression(blockstate, stmt.dst, addr, path + ['dst'])
+                        # Let the cfg take care of control flow!
+
+                    elif stmt.tag in ('Ist_WrTmp', 'Ist_Store', 'Ist_Put'):
+                        this_expression = SmartExpression(blockstate, stmt.data, addr, path + ['data'])
+                        blockstate.assign(stmt, this_expression, stmt_idx)
+
+                    elif stmt.tag == 'Ist_LoadG':
+                        # Conditional loads. Lots of bullshit.
+                        addr_expression = SmartExpression(blockstate, stmt.addr, addr, path + ['addr'])
+                        blockstate.access(addr_expression, AccessType.READ)
+
+                        # load the actual data
+                        data_expression = blockstate.get_mem(addr_expression, stmt.cvt_types[0])
+                        # it then needs a type conversion applied to it
+                        cvt_data_expression = CustomExpression()
+                        cvt_data_expression.copy_to_self(data_expression)
+                        cvt_data_expression.type = stmt.cvt_types[1]
+                        conv_diff = vexutils.extract_int(stmt.cvt_types[1]) - vexutils.extract_int(stmt.cvt_types[0])
+                        if conv_diff != 0:
+                            if 'S' in stmt.cvt:
+                                cvt_data_expression.cleanval = cvt_data_expression.cleanval.sign_extend(conv_diff)
+                                cvt_data_expression.dirtyval = cvt_data_expression.dirtyval.sign_extend(conv_diff)
+                            else:
+                                cvt_data_expression.cleanval = cvt_data_expression.cleanval.zero_extend(conv_diff)
+                                cvt_data_expression.dirtyval = cvt_data_expression.dirtyval.zero_extend(conv_diff)
+
+                        temps.write(stmt.dst, cvt_data_expression)
+                        SmartExpression(blockstate, stmt.guard, addr, path + ['guard'])
+                        SmartExpression(blockstate, stmt.alt, addr, path + ['alt'])
+
+                    elif stmt.tag == 'Ist_StoreG':
+                        # Conditional store
+                        addr_expr = SmartExpression(blockstate, stmt.addr, addr, path + ['addr'])
+                        value_expr = SmartExpression(blockstate, stmt.data, addr, path + ['data'])
+                        blockstate.access(addr_expr, AccessType.WRITE)
+                        if addr_expr.stack_addr:
+                            blockstate.stack_cache[addr_expr.cleanval] = value_expr
+                        if value_expr.stack_addr:
+                            blockstate.access(value_expr, AccessType.POINTER)
+
+                        SmartExpression(blockstate, stmt.guard, addr, path + ['guard'])
+
+                    elif stmt.tag == 'Ist_PutI':    # haha no
+                        SmartExpression(blockstate, stmt.data, addr, path + ['data'])
+                    elif stmt.tag == 'Ist_CAS':     # HA ha no
+                        if stmt.oldLo != 4294967295:
+                            blockstate.tempstore.default(stmt.oldLo)
+                        if stmt.oldHi != 4294967295:
+                            blockstate.tempstore.default(stmt.oldHi)
+                    elif stmt.tag == 'Ist_Dirty':   # hahAHAHAH NO
+                        if stmt.tmp != 4294967295:
+                            blockstate.tempstore.default(stmt.tmp)
                     else:
-                        queue.append(blockstate.copy(node.addr))
+                        raise FidgetUnsupportedError("Unknown vex instruction???", stmt)
 
-        elif block.jumpkind in ('Ijk_Ret', 'Ijk_NoDecode'):
-            pass
-        else:
-            raise FidgetError("(%#x) Can't proceed from unknown jumpkind %s" % (blockstate.addr, block.jumpkind))
+            if block.jumpkind == 'Ijk_Call' or block.jumpkind in OK_CONTINUE_JUMPS:
+                if block.jumpkind == 'Ijk_Call' and self.project.arch.call_pushes_ret:
+                    # Pop the return address off the stack and keep going
+                    stack = blockstate.get_reg(self.project.arch.sp_offset, self.project.arch.bits)
+                    popped = stack.deps[0] if stack.deps[0].stack_addr else stack.deps[1]
+                    blockstate.regs[self.project.arch.sp_offset] = popped
+                    # Discard the last two tags -- they'll be an alloc and an access for the call
+                    # (the push and the retaddr)
+                    blockstate.tags = blockstate.tags[:-2]
 
-        blockstate.end()
-        for tag in blockstate.tags:
-            yield tag
+                for context in self.cfg.get_all_nodes(blockstate.addr):
+                    for node, jumpkind in self.cfg.get_successors_and_jumpkind( \
+                                            context, \
+                                            excluding_fakeret=False):
+                        if jumpkind not in OK_CONTINUE_JUMPS:
+                            continue
+                        elif node.addr in headcache:
+                            continue
+                        elif node.simprocedure_name is not None:
+                            continue
+                        elif node.addr in cache:
+                            for succ, jumpkind in self.cfg.get_successors_and_jumpkind(node, excluding_fakeret=False):
+                                if jumpkind in OK_CONTINUE_JUMPS and succ.addr not in cache and succ.simprocedure_name is None:
+                                    queue.append(blockstate.copy(succ.addr))
+                        else:
+                            queue.append(blockstate.copy(node.addr))
+
+            elif block.jumpkind in ('Ijk_Ret', 'Ijk_NoDecode'):
+                pass
+            else:
+                raise FidgetError("(%#x) Can't proceed from unknown jumpkind %s" % (blockstate.addr, block.jumpkind))
+
+            blockstate.end()
+            for tag, bindata in blockstate.tags:
+                if tag == 'ALLOC':
+                    struct.alloc(bindata)
+                elif tag == 'ACCESS':
+                    struct.access(bindata)
+                else:
+                    raise FidgetUnsupportedError('You forgot to update the tag list, jerkface!')
+
+        return struct
 
 class TempStore(object):
     def __init__(self, tyenv):
@@ -305,7 +408,7 @@ class BlockState:
     def access(self, addr_expression, access_type):
         if not addr_expression.stack_addr:
             return
-        self.tags.append(('STACK_ACCESS', addr_expression.make_bindata(access_type)))
+        self.tags.append(('ACCESS', addr_expression.make_bindata(access_type)))
 
     def assign(self, vextatement, expression, stmt_idx):
         if vextatement.tag == 'Ist_WrTmp':
@@ -320,11 +423,11 @@ class BlockState:
             if vextatement.offset == self.project.arch.sp_offset:
                 if not expression.is_concrete:
                     l.warning("This function appears to use alloca(). Abort.")
-                    self.tags.append(('ABORT_ALLOCA', expression.make_bindata(0)))
+                    raise FidgetAnalysisFailure
                 elif expression.cleanval.model.value == 0:
-                    self.tags.append(('STACK_DEALLOC', expression.make_bindata(0)))
+                    self.tags.append(('ALLOC', expression.make_bindata(0)))
                 else:
-                    self.tags.append(('STACK_ALLOC', expression.make_bindata(0)))
+                    self.tags.append(('ALLOC', expression.make_bindata(0)))
         elif vextatement.tag == 'Ist_Store':
             addr_expr = SmartExpression(self, vextatement.addr, expression.addr, ['statements', stmt_idx, 'addr'])
             self.access(addr_expr, AccessType.WRITE)

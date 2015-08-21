@@ -2,9 +2,8 @@ import os, shutil, pickle
 from angr import Project
 import claripy
 
-from .stack_magic import Stack
-from .sym_tracking import find_stack_tags
-from .errors import FidgetError, FidgetUnsupportedError
+from .sym_tracking import StructureAnalysis
+from .errors import FidgetError
 
 import logging
 l = logging.getLogger('fidget.patching')
@@ -74,65 +73,12 @@ class Fidget(object):
         blacklist = blacklist if blacklist is not None else []
         l.debug('Patching function stacks')
         self._stack_patch_data = []
-
-        # Loop through all the functions as found by angr's CFG
-        funcs = self.cfg.function_manager.functions
-
-        # Find the real _start on MIPS so we don't touch it
-        do_not_touch = None
-        if self.project.arch.name == 'MIPS32':
-            for context in self.cfg.get_all_nodes(self.project.entry):
-                for succ, jumpkind in self.cfg.get_successors_and_jumpkind(context):
-                    if jumpkind == 'Ijk_Call':
-                        do_not_touch = succ.addr
-                        l.debug('Found MIPS entry point stub target %#x', do_not_touch)
-
         last_size = 0
         successes = 0
         totals = 0
-        for funcaddr, func in funcs.iteritems():
-            # But don't touch _start. Seriously.
-            if funcaddr == self.project.entry:
-                l.debug('Skipping entry point')
-                continue
+        funclist = StructureAnalysis.get_real_functions(self.cfg)
 
-            # On MIPS there's another function that's part of the entry point.
-            # Trying to mess with it will cause catastrope.
-            if funcaddr == do_not_touch:
-                l.debug('Skipping MIPS entry point stub target')
-                continue
-
-            # Don't try to patch simprocedures
-            if self.project.is_hooked(funcaddr):
-                l.debug("Skipping simprocedure %s", self.project._sim_procedures[funcaddr][0].__name__)
-                continue
-
-            # Don't touch functions not in any segment
-            if self.project.loader.main_bin.find_segment_containing(funcaddr) is None:
-                l.debug('Skipping function %s not mapped', func.name)
-                continue
-
-            # If the text section exists, only patch functions in it
-            if '.text' not in self.project.loader.main_bin.sections_map:
-                sec = self.project.loader.main_bin.find_section_containing(funcaddr)
-                if sec is None or sec.name != '.text':
-                    l.debug('Skipping function %s not in .text', func.name)
-                    continue
-
-            # Don't patch functions in the PLT
-            if funcaddr in self.project.loader.main_bin.plt.values():
-                l.debug('Skipping function %s in PLT', func.name)
-                continue
-
-            # If the CFG couldn't parse an indirect jump, avoid
-            if func.has_unresolved_jumps:
-                l.debug("Skipping function %s with unresolved jumps", func.name)
-                continue
-
-            # Check if the function starts at a SimProcedure (edge case)
-            if self.cfg.get_any_node(funcaddr).simprocedure_name is not None:
-                l.debug('Skipping function %s starting with a SimProcedure', func.name)
-
+        for func in funclist:
             # Check if the function is white/blacklisted
             if (len(whitelist) > 0 and func.name not in whitelist) or \
                (len(blacklist) > 0 and func.name in blacklist):
@@ -140,7 +86,7 @@ class Fidget(object):
                 continue
 
             l.info('Patching stack of %s', func.name)
-            self.patch_function_stack(funcaddr, has_return=func.has_return, **kwargs)
+            self.patch_function_stack(func, **kwargs)
             if len(self._stack_patch_data) > last_size:
                 last_size = len(self._stack_patch_data)
                 successes += 1
@@ -151,51 +97,29 @@ class Fidget(object):
             l.info('Patched %d/%d functions', successes, totals)
 
 
-    def patch_function_stack(self, funcaddr, has_return, safe=False, largemode=False):
+    def patch_function_stack(self, func, safe=False, largemode=False):
         solver = claripy.Solver()
-        alloc_op = None   # the instruction that performs a stack allocation
-        dealloc_ops = []  # the instructions that perform a stack deallocation
-        least_alloc = None # the smallest allocation known
-        stack = Stack(self.project, solver, 0)
-        for tag, bindata in find_stack_tags(self.project, self.cfg, funcaddr):
-            if tag == '':
-                continue
-            elif tag.startswith('ABORT'):
-                return
-            l.debug('Got a tag at %#0.8x: %s: %#x', bindata.addr, tag, bindata.value)
+        analysis_result = StructureAnalysis(self.project, self.cfg, [func], False)
+        stack = analysis_result.stack_frames[func._addr]
+        if stack is None:
+            return
+        stack = analysis_result.structures[stack]
 
-            if tag == 'STACK_ALLOC':
-                if alloc_op is None or bindata.value < alloc_op.value:
-                    alloc_op = bindata
-                    stack.conc_size = -alloc_op.value
-                if least_alloc is None or bindata.value > least_alloc.value:
-                    least_alloc = bindata
-            elif tag == 'STACK_DEALLOC':
-                if not bindata.symval.symbolic:
-                    continue
-                dealloc_ops.append(bindata)
-                if least_alloc is None or bindata.value > least_alloc.value:
-                    least_alloc = bindata
-            elif tag == 'STACK_ACCESS':
-                stack.access(bindata)
-            else:
-                raise FidgetUnsupportedError('You forgot to update the tag list, jerkface!')
-
-        if alloc_op is None:
+        if stack.alloc_op is None:
             l.info('\tFunction does not appear to have a stack frame (No alloc)')
-            return
+            return False
 
-        if has_return and least_alloc.value != self.project.arch.bytes if self.project.arch.call_pushes_ret else 0:
-            l.info('\tFunction does not ever deallocate stack frame (Least alloc is %d for %s)', -least_alloc.value, self.project.arch.name)
-            return
+        if func.has_return and stack.least_alloc.value != self.project.arch.bytes if self.project.arch.call_pushes_ret else 0:
+            l.info('\tFunction does not ever deallocate stack frame (Least alloc is %d for %s)', -stack.least_alloc.value, self.project.arch.name)
+            return False
 
-        if has_return and len(dealloc_ops) == 0:
+        if func.has_return and len(stack.dealloc_ops) == 0:
             l.error('\tFunction does not ever deallocate stack frame (No zero alloc)')
-            return
+            return False
 
         if stack.conc_size <= 0:
             l.error('\tFunction has invalid stack size of %#x', stack.conc_size)
-            return
+            return False
 
     # Find the lowest sp-access that isn't an argument to the next function
     # By starting at accesses to [esp] and stepping up a word at a time
@@ -222,7 +146,7 @@ class Fidget(object):
 
         if stack.num_vars == 0:
             l.info("\tFunction has %#x-byte stack frame, but doesn't use it for local vars", stack.conc_size)
-            return
+            return False
 
         l.info('\tFunction has a stack frame of %#x bytes', stack.conc_size)
         l.info('\t%d access%s to %d address%s %s made.',
@@ -235,9 +159,9 @@ class Fidget(object):
         stack.collapse()
         stack.mark_sizes()
 
-        alloc_op.apply_constraints(solver)
-        solver.add(alloc_op.symval == -stack.sym_size)
-        for op in dealloc_ops:
+        stack.alloc_op.apply_constraints(solver)
+        solver.add(stack.alloc_op.symval == -stack.sym_size)
+        for op in stack.dealloc_ops:
             op.apply_constraints(solver)
             solver.add(op.symval == 0)
 
@@ -256,7 +180,7 @@ class Fidget(object):
         elif not largemode and not safe:
             solver.add(stack.sym_size <= stack.conc_size + (16 * stack.num_vars + 32))
 
-        stack.sym_link(safe=safe)
+        stack.sym_link(solver, safe=safe)
 
         # OKAY HERE WE GO
         #print '\nConstraints:'
@@ -264,7 +188,7 @@ class Fidget(object):
         #print
 
         if not solver.satisfiable():
-            l.critical('(%#x) Safe constraints unsatisfiable, fix this NOW', funcaddr)
+            l.critical('(%#x) Safe constraints unsatisfiable, fix this NOW', func._addr)
             raise FidgetError("You're a terrible programmer")
 
         # z3 is smart enough that this doesn't add any noticable overhead
@@ -278,7 +202,7 @@ class Fidget(object):
         new_stack = solver.eval(stack.sym_size, 1)[0].value
         if new_stack == stack.conc_size:
             l.warning('\tUnable to resize stack')
-            return
+            return False
 
         l.info('\tResized stack from 0x%x to 0x%x', stack.conc_size, new_stack)
 
@@ -289,8 +213,9 @@ class Fidget(object):
             else:
                 l.debug('Moved %#x (size %#x) to %#x', var.conc_addr, var.size, fixedval)
 
-        self._stack_patch_data += alloc_op.get_patch_data(solver)
-        for dealloc in dealloc_ops:
+        self._stack_patch_data += stack.alloc_op.get_patch_data(solver)
+        for dealloc in stack.dealloc_ops:
             self._stack_patch_data += dealloc.get_patch_data(solver)
-        self._stack_patch_data += stack.patches
+        self._stack_patch_data += stack.get_patches(solver)
+        return True
 

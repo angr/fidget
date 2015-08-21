@@ -72,15 +72,28 @@ class Variable(object):
     def get_patches(self, solver):
         return sum((access.get_patches(solver) for access in self.accesses), [])
 
-class Stack():
-    def __init__(self, project, solver, stack_size):
+num_structs = 0
+
+class Struct(object):
+    def __init__(self, arch, is_stack_frame=False):
+        self.arch = arch
+        self.is_stack_frame = is_stack_frame
         self.variables = {} # all the variables, indexed by address
         self.addr_list = [] # all the addresses, kept sorted
-        self.project = project
-        self.solver = solver
-        self.conc_size = stack_size
-        self.sym_size = claripy.BV("stack_size", project.arch.bits)
+        self.conc_size = 0
+        self.sym_size = claripy.BV("stack_size", arch.bits)
         self.unsafe_constraints = []
+        self.name = self._make_name()
+
+        self.alloc_op = None
+        self.dealloc_ops = []
+        self.least_alloc = None
+
+    def _make_name(self):
+        global num_structs
+        name = ('stack_%0.4d' if self.is_stack_frame else 'struct_%0.4d') % num_structs
+        num_structs += 1
+        return name
 
     def __iter__(self):
         for addr in self.addr_list:
@@ -97,9 +110,23 @@ class Stack():
 
         if access.conc_addr not in self.variables:
             name_prefix = 'var' if access.conc_addr < 0 else 'arg'
-            sym_addr = claripy.BV('%s_%x' % (name_prefix, abs(access.conc_addr)), self.project.arch.bits)
+            sym_addr = claripy.BV('%s_%x' % (name_prefix, abs(access.conc_addr)), self.arch.bits)
             self.add_variable(Variable(access.conc_addr, sym_addr))
         self.variables[access.conc_addr].add_access(access)
+
+    def alloc(self, bindata):
+        if bindata.value == 0:
+            if not bindata.symval.symbolic:
+                return
+            self.dealloc_ops.append(bindata)
+            if self.least_alloc is None or bindata.value > self.least_alloc.value:
+                self.least_alloc = bindata
+        else:
+            if self.alloc_op is None or bindata.value < self.alloc_op.value:
+                self.alloc_op = bindata
+                self.conc_size = -self.alloc_op.value
+            if self.least_alloc is None or bindata.value > self.least_alloc.value:
+                self.least_alloc = bindata
 
     def add_variable(self, var):
         self.variables[var.conc_addr] = var
@@ -121,42 +148,41 @@ class Stack():
     def num_vars(self):
         return len(self.variables)
 
-    @property
-    def patches(self):
-        return sum((var.get_patches(self.solver) for var in self), [])
+    def get_patches(self, solver):
+        return sum((var.get_patches(solver) for var in self), [])
 
-    def sym_link(self, safe=False):
-        self.solver.add(self.sym_size >= self.conc_size)
-        self.solver.add(self.sym_size % (self.project.arch.bytes) == 0)
+    def sym_link(self, solver, safe=False):
+        solver.add(self.sym_size >= self.conc_size)
+        solver.add(self.sym_size % (self.arch.bytes) == 0)
         self.unsafe_constraints.append(self.sym_size > self.conc_size)
 
         first = self.variables[self.addr_list[0]]
-        self.solver.add(first.sym_addr >= (first.conc_addr + self.conc_size) - self.sym_size)
+        solver.add(first.sym_addr >= (first.conc_addr + self.conc_size) - self.sym_size)
         var_list = list(self)
         for var, next_var in zip(var_list, var_list[1:] + [None]):
-            var.sym_link(self.solver, self)
+            var.sym_link(solver, self)
             self.unsafe_constraints.extend(var.unsafe_constraints)
-            if var.conc_addr % (self.project.arch.bytes) == 0:
-                self.solver.add(var.sym_addr % (self.project.arch.bytes) == 0)
+            if var.conc_addr % (self.arch.bytes) == 0:
+                solver.add(var.sym_addr % (self.arch.bytes) == 0)
 
             if var.special:
                 # We're one of the args that needs to stay fixed relative somewhere
                 pass
             elif next_var is None or next_var.special:
                 # If we're the last free-floating variable, set a solid bottom
-                self.solver.add(var.sym_addr <= var.conc_addr)
+                solver.add(var.sym_addr <= var.conc_addr)
                 if var.size is not None:
-                    self.solver.add(var.sym_addr <= var.sym_addr + var.size)
-                    self.solver.add(var.sym_addr + var.size <= next_var.sym_addr)
+                    solver.add(var.sym_addr <= var.sym_addr + var.size)
+                    solver.add(var.sym_addr + var.size <= next_var.sym_addr)
                     self.unsafe_constraints.append(var.sym_addr + var.size < next_var.sym_addr)
             else:
                 # Otherwise we're one of the free-floating variables
-                self.solver.add(var.sym_addr <= var.sym_addr + var.size)
+                solver.add(var.sym_addr <= var.sym_addr + var.size)
                 self.unsafe_constraints.append(var.sym_addr + var.size < next_var.sym_addr)
                 if safe:
-                    self.solver.add(var.sym_addr + var.size == next_var.sym_addr)
+                    solver.add(var.sym_addr + var.size == next_var.sym_addr)
                 else:
-                    self.solver.add(var.sym_addr + var.size <= next_var.sym_addr)
+                    solver.add(var.sym_addr + var.size <= next_var.sym_addr)
 
     def collapse(self):
         i = 0               # old fashioned loop because we're removing items
@@ -165,7 +191,7 @@ class Stack():
             var = self.variables[self.addr_list[i]]
             if var.special:
                 continue
-            if var.conc_addr % (self.project.arch.bytes) != 0:
+            if var.conc_addr % (self.arch.bytes) != 0:
                 self.merge_up(i)
                 i -= 1
             elif var.access_flags & 8:

@@ -9,3 +9,6 @@ class ValueNotFoundError(FidgetError):
 
 class FuzzingAssertionFailure(FidgetError):
     pass
+
+class FidgetAnalysisFailure(FidgetError):
+    pass
