@@ -151,14 +151,20 @@ class StructureAnalysis(object):
 
     def analyze_stack(self, funcaddr):
         struct = Struct(self.project.arch, is_stack_frame=True)
-        queue = [BlockState(self.project, funcaddr)]
+        initial_state = BlockState(self.project, funcaddr, taint_region=struct.name)
+        stackexp = ConstExpression(claripy.BVV(0, self.project.arch.bits), 'Ity_I%d' % self.project.arch.bits, True)
+        stackexp.taints['pointer'] = struct.name
+        stackexp.addr = funcaddr
+        initial_state.regs[self.project.arch.sp_offset] = stackexp
+
+        queue = [initial_state]
         headcache = set()
         cache = set()
         while len(queue) > 0:
             blockstate = queue.pop(0)
             if blockstate.addr in headcache:
                 continue
-            l.debug("Analyzing block 0x%x", blockstate.addr)
+            l.debug("Analyzing block %#x", blockstate.addr)
 
             try:
                 block = blockstate.lift(opt_level=1, max_size=400)
@@ -230,9 +236,9 @@ class StructureAnalysis(object):
                         addr_expr = SmartExpression(blockstate, stmt.addr, addr, path + ['addr'])
                         value_expr = SmartExpression(blockstate, stmt.data, addr, path + ['data'])
                         blockstate.access(addr_expr, AccessType.WRITE)
-                        if addr_expr.stack_addr:
-                            blockstate.stack_cache[addr_expr.cleanval] = value_expr
-                        if value_expr.stack_addr:
+                        if addr_expr.taints['pointer']:
+                            blockstate.mem_regions[addr_expr.taints['pointer']][addr_expr.cleanval] = value_expr
+                        if value_expr.taints['pointer'] == struct.name:
                             blockstate.access(value_expr, AccessType.POINTER)
 
                         SmartExpression(blockstate, stmt.guard, addr, path + ['guard'])
@@ -254,7 +260,7 @@ class StructureAnalysis(object):
                 if block.jumpkind == 'Ijk_Call' and self.project.arch.call_pushes_ret:
                     # Pop the return address off the stack and keep going
                     stack = blockstate.get_reg(self.project.arch.sp_offset, self.project.arch.bits)
-                    popped = stack.deps[0] if stack.deps[0].stack_addr else stack.deps[1]
+                    popped = stack.deps[0] if stack.deps[0].taints['pointer'] else stack.deps[1]
                     blockstate.regs[self.project.arch.sp_offset] = popped
                     # Discard the last two tags -- they'll be an alloc and an access for the call
                     # (the push and the retaddr)
@@ -328,17 +334,16 @@ class AccessType:       # pylint: disable=no-init
     UNINITREAD = 8
 
 class BlockState:
-    def __init__(self, project, addr):
-        self.addr = addr
+    def __init__(self, project, addr, taint_region=None):
         self.project = project
-        self.regs = {}
-        self.stack_cache = {}
-        self.tags = []
+        self.addr = addr
+        self.taint_region = taint_region
+
         self.tempstore = None
-        stackexp = ConstExpression(claripy.BVV(0, project.arch.bits), 'Ity_I%d' % project.arch.bits, True)
-        stackexp.stack_addr = True
-        stackexp.addr = addr
-        self.regs[self.project.arch.sp_offset] = stackexp
+        self.regs = {}
+        self.mem_regions = defaultdict(dict)
+        self.tags = []
+
         if project.arch.name == 'AMD64':
             self.regs[144] = ConstExpression.default('Ity_I64')
             self.regs[156] = ConstExpression.default('Ity_I64')
@@ -346,15 +351,15 @@ class BlockState:
             self.regs[216] = ConstExpression.default('Ity_I32')
             self.regs[884] = ConstExpression.default('Ity_I32')
         elif project.arch.name.startswith('ARM'):
-            self.regs[392] = ConstExpression.default('Ity_I32')
-            self.regs[392].it_taint = True
+            self.regs[project.arch.registers['itstate'][0]] = ConstExpression.default('Ity_I32')
+            self.regs[project.arch.registers['itstate'][0]].taints['it'] = True
 
     def copy(self, newaddr):
-        out = BlockState(self.project, newaddr)
+        out = BlockState(self.project, newaddr, taint_region=self.taint_region)
 
         # copy over all registers that hold pointers to the stack
         for offset, val in self.regs.iteritems():
-            if val.stack_addr:
+            if val.taints['pointer']:
                 out.regs[offset] = val
         return out
 
@@ -389,9 +394,9 @@ class BlockState:
         return self.tempstore.read(tmpnum)
 
     def get_mem(self, addr, ty):
-        if addr.stack_addr:
-            if addr.cleanval in self.stack_cache:
-                val = self.stack_cache[addr.cleanval]
+        if addr.taints['pointer']:
+            if addr.cleanval in self.mem_regions[addr.taints['pointer']]:
+                val = self.mem_regions[addr.taints['pointer']][addr.cleanval]
                 if val.type == ty:
                     return val
             return ConstExpression.default(ty)
@@ -406,7 +411,7 @@ class BlockState:
         return ConstExpression.default(ty)
 
     def access(self, addr_expression, access_type):
-        if not addr_expression.stack_addr:
+        if addr_expression.taints['pointer'] != self.taint_region:
             return
         self.tags.append(('ACCESS', addr_expression.make_bindata(access_type)))
 
@@ -420,8 +425,8 @@ class BlockState:
                 if not vextatement.offset in self.regs:
                     self.regs[vextatement.offset] = ConstExpression.default('Ity_I%d' % self.project.arch.bits)
                 self.regs[vextatement.offset] = expression.overwrite(self.regs[vextatement.offset])
-            if vextatement.offset == self.project.arch.sp_offset:
-                if not expression.is_concrete:
+            if vextatement.offset == self.project.arch.sp_offset and 'stack' in self.taint_region:
+                if not expression.taints['concrete']:
                     l.warning("This function appears to use alloca(). Abort.")
                     raise FidgetAnalysisFailure
                 elif expression.cleanval.model.value == 0:
@@ -431,9 +436,9 @@ class BlockState:
         elif vextatement.tag == 'Ist_Store':
             addr_expr = SmartExpression(self, vextatement.addr, expression.addr, ['statements', stmt_idx, 'addr'])
             self.access(addr_expr, AccessType.WRITE)
-            if addr_expr.stack_addr:
-                self.stack_cache[addr_expr.cleanval] = expression
-            if expression.stack_addr:
+            if addr_expr.taints['pointer']:
+                self.mem_regions[addr_expr.taints['pointer']][addr_expr.cleanval] = expression
+            if expression.taints['pointer']:
                 self.access(expression, AccessType.POINTER)
 
     def end(self):
@@ -450,9 +455,7 @@ class SmartExpression:
         self.path = path
         self.project = self.blockstate.project
         self.deps = []
-        self.stack_addr = False
-        self.is_concrete = False
-        self.it_taint = False
+        self.taints = defaultdict(bool)
         self.rootval = False
         self._bindata = [None]
         self.size = vexpression.result_size if not vexpression.tag.startswith('Ico_') else vexpression.size
@@ -483,25 +486,25 @@ class SmartExpression:
                 self.cleanval = claripy.BVV(vexpression.value, self.size)
                 self.dirtyval = claripy.BV('%x_%d' % (addr, path[1]), self.size)
             self.rootval = True
-            self.is_concrete = True
+            self.taints['concrete'] = True
         elif vexpression.tag == 'Iex_ITE':
             false_expr = SmartExpression(blockstate, vexpression.iffalse, addr, path + ['iffalse'])
             truth_expr = SmartExpression(blockstate, vexpression.iftrue, addr, path + ['iftrue'])
-            if truth_expr.stack_addr:
+            if truth_expr.taints['pointer']:
                 self.copy_to_self(truth_expr)
             else:
                 self.copy_to_self(false_expr)
             cond_expr = SmartExpression(blockstate, vexpression.cond, addr, path + ['cond'])
-            if not cond_expr.it_taint:
-                self.is_concrete = false_expr.is_concrete and truth_expr.is_concrete
-            self.it_taint = false_expr.it_taint or truth_expr.it_taint
+            if not cond_expr.taints['it']:
+                self.taints['concrete'] = false_expr.taints['concrete'] and truth_expr.taints['concrete']
+            self.taints['it'] = false_expr.taints['it'] or truth_expr.taints['it']
         elif vexpression.tag in ('Iex_Unop','Iex_Binop','Iex_Triop','Iex_Qop'):
             try:
-                self.is_concrete = True
+                self.taints['concrete'] = True
                 for i, expr in enumerate(vexpression.args):
                     arg = SmartExpression(blockstate, expr, addr, path + ['args', i])
-                    self.is_concrete = self.is_concrete and arg.is_concrete
-                    self.it_taint = self.it_taint or arg.it_taint
+                    self.taints['concrete'] = self.taints['concrete'] and arg.taints['concrete']
+                    self.taints['it'] = self.taints['it'] or arg.taints['it']
                     self.deps.append(arg)
                 if vexpression.op.startswith('Iop_Mul') or vexpression.op.startswith('Iop_And'):
                     self.shield_constants(self.deps)
@@ -511,21 +514,23 @@ class SmartExpression:
                 self.dirtyval = operations[vexpression.op].calculate(*(x.dirtyval for x in self.deps))
                 if vexpression.op.startswith('Iop_Add') or vexpression.op.startswith('Iop_And') or \
                    vexpression.op.startswith('Iop_Or') or vexpression.op.startswith('Iop_Xor'):
-                    self.stack_addr = self.deps[0].stack_addr or self.deps[1].stack_addr
+                    t1 = self.deps[0].taints['pointer']
+                    t2 = self.deps[1].taints['pointer']
+                    self.taints['pointer'] = ((t1 if t1 == t2 else False) if t1 and t2 else t1) if t1 or t2 else False
                 elif vexpression.op.startswith('Iop_Sub'):
-                    self.stack_addr = self.deps[0].stack_addr and not self.deps[1].stack_addr
+                    t1 = self.deps[0].taints['pointer']
+                    t2 = self.deps[1].taints['pointer']
+                    self.taints['pointer'] = t1 if t1 and not t2 else False
             except SimOperationError:
-                if vexpression.op == 'Iop_F64toI32S':
-                    raise
                 l.exception("SimOperationError while running op '%s', returning null", vexpression.op)
-                self.is_concrete = False
+                self.taints['concrete'] = False
             except KeyError:
                 l.error("Unsupported operation '%s', returning null", vexpression.op)
-                self.is_concrete = False
+                self.taints['concrete'] = False
         elif vexpression.tag == 'Iex_CCall':
             for i, expr in enumerate(vexpression.args):
                 arg = SmartExpression(blockstate, expr, addr, path + ['args', i])
-                self.it_taint = self.it_taint or arg.it_taint
+                self.taints['it'] = self.taints['it'] or arg.taints['it']
         elif vexpression.tag == 'Iex_GetI':
             pass
         else:
@@ -545,9 +550,7 @@ class SmartExpression:
         self.deps = other.deps
         self.addr = other.addr
         self._bindata = other._bindata
-        self.stack_addr = other.stack_addr
-        self.is_concrete = other.is_concrete
-        self.it_taint = other.it_taint
+        self.taints = defaultdict(bool, other.taints)
         self.rootval = other.rootval
         self.path = other.path
 
@@ -556,7 +559,7 @@ class SmartExpression:
         for i, expr in enumerate(expr_list):
             if whitelist is not None and i not in whitelist: continue
             if expr.rootval:
-                expr_list[i] = ConstExpression(expr.cleanval, expr.type, expr.is_concrete)
+                expr_list[i] = ConstExpression(expr.cleanval, expr.type, expr.taints['concrete'])
 
     def make_bindata(self, flags):
         # this is the top level call. It returns a BinaryDataConglomerate.
@@ -610,9 +613,9 @@ class SmartExpression:
         out.addr = smaller.addr # ??? what will be done with this
         out.path = smaller.path
         out.project = out.blockstate.project
-        out.stack_addr = larger.stack_addr # sketchy...
-        out.is_concrete = smaller.is_concrete and larger.is_concrete
-        out.it_taint = False
+        out.taints = defaultdict(bool)
+        out.taints['pointer'] = larger.taints['pointer']  # sketchy...
+        out.taints['concrete'] = larger.taints['concrete'] and smaller.taints['concrete']
         out.rootval = False
         out._bindata = [None]
         out.cleanval = claripy.Concat(larger.cleanval[larger.size-1:smaller.size], smaller.cleanval)
@@ -636,9 +639,7 @@ class SmartExpression:
         out.addr = self.addr # ??? what will be done with this
         out.path = self.path
         out.project = out.blockstate.project
-        out.stack_addr = False
-        out.is_concrete = self.is_concrete
-        out.it_taint = False
+        out.taints = defaultdict(bool, concrete=self.taints['concrete'])
         out.rootval = False
         out._bindata = [None]
         out.cleanval = self.cleanval[size_bits-1:0]
@@ -653,15 +654,13 @@ class CustomExpression(SmartExpression):
         pass
 
 class ConstExpression(object):
-    def __init__(self, val, ty, is_concrete):
+    def __init__(self, val, ty, concrete):
         self.size = val.size()
         self.type = ty
         self.cleanval = val
         self.dirtyval = val
         self.deps = []
-        self.stack_addr = False
-        self.is_concrete = is_concrete
-        self.it_taint = False
+        self.taints = defaultdict(bool, concrete=concrete)
         self._bindata = [None]
         self.rootval = False
         self.addr = None
@@ -680,7 +679,7 @@ class ConstExpression(object):
         if size_bits > self.size:
             l.error("Attempting to truncate SmartExpression of size %d to size %d", self.size, size_bits)
             return self
-        return ConstExpression(self.cleanval[size_bits-1:0], ty, self.is_concrete)
+        return ConstExpression(self.cleanval[size_bits-1:0], ty, self.taints['concrete'])
 
     @staticmethod
     def default(ty):
