@@ -521,7 +521,7 @@ class SmartExpression:
                    vexpression.op.startswith('Iop_Or') or vexpression.op.startswith('Iop_Xor'):
                     t1 = self.deps[0].taints['pointer']
                     t2 = self.deps[1].taints['pointer']
-                    self.taints['pointer'] = ((t1 if t1 == t2 else False) if t1 and t2 else t1) if t1 or t2 else False
+                    self.taints['pointer'] = (t1 if t1 else t2) if (bool(t1) ^ bool(t2)) else False
                 elif vexpression.op.startswith('Iop_Sub'):
                     t1 = self.deps[0].taints['pointer']
                     t2 = self.deps[1].taints['pointer']
