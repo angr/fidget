@@ -91,6 +91,7 @@ class BinaryData(object):
         self.patch_bytes_expression = None
         self.patch_value_expression = None
         self._test_values = ()
+        self._already_patched = False
 
         # this is some weird logic to make some potentially dumb behavior
         # transparent to the user.
@@ -157,6 +158,9 @@ class BinaryData(object):
         '''
         if not (value is None) ^ (solver is None):
             raise ValueError('Must provide a value xor a solver!')
+        if self._already_patched:
+            return []
+
         patch_bytes = self._get_patched_instruction(value=value, solver=solver)
         if value is None:
             value = solver.eval(self.patch_value_expression, 1)[0].signed
@@ -165,6 +169,7 @@ class BinaryData(object):
             return []
         physaddr = self._project.loader.main_bin.addr_to_offset(self.addr)
         if self._armthumb: physaddr -= 1
+        self._already_patched = True
         return [(physaddr, patch_bytes)]
 
     def _error(self):
