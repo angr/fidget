@@ -448,6 +448,8 @@ class BlockState:
         for offset, value in self.regs.iteritems():
             if offset in (self.project.arch.sp_offset, self.project.arch.bp_offset, self.project.arch.ip_offset):
                 continue
+            if offset == 36 and self.project.arch.name.startswith('ARM') and self.addr & 1 == 1:
+                continue
             self.access(value, AccessType.POINTER)
 
 class SmartExpression:
