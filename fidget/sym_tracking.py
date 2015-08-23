@@ -291,8 +291,10 @@ class StructureAnalysis(object):
             blockstate.end()
             for tag, bindata in blockstate.tags:
                 if tag == 'ALLOC':
+                    l.debug("Got tag: %#0.8x  ALLOC %#x", bindata.addr, bindata.value)
                     struct.alloc(bindata)
                 elif tag == 'ACCESS':
+                    l.debug("Got tag: %#0.8x ACCESS %s %#x", bindata.addr, AccessType.mapping[bindata.access_flags], bindata.value)
                     struct.access(bindata)
                 else:
                     raise FidgetUnsupportedError('You forgot to update the tag list, jerkface!')
@@ -332,6 +334,7 @@ class AccessType:       # pylint: disable=no-init
     WRITE = 2
     POINTER = 4
     UNINITREAD = 8
+    mapping = {0: '<none>', 1: 'READ', 2: 'WRITE', 4: 'POINTER', 8: 'UNINITREAD'}
 
 class BlockState:
     def __init__(self, project, addr, taint_region=None):
