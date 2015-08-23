@@ -312,6 +312,36 @@ class BinaryData(object):
                                     imm8
                                 )
                             self._test_values = (1, 0xff)
+                        elif armins & 0xF000 == 0x6000:
+                            # Register-relative LDR/STR
+                            # page 22
+                            # unsigned 7 bit imm stored w/o last two bits
+                            thoughtval = ((armins >> 6) & 0x1F) << 2
+                            if thoughtval != self.value:
+                                raise ValueNotFoundError
+                            imm5 = self._imm(5)
+                            self.patch_value_expression = imm5.zero_extend(self.bits-5) << 2
+                            self.patch_bytes_expression = claripy.Concat(
+                                    BVV(armins >> 11, 5),
+                                    imm5,
+                                    BVV(armins & 0x3F, 6)
+                                )
+                            self._test_values = (4, 0x7c)
+                        elif armins & 0xF000 == 0x7000:
+                            # Register-relative LDRB/STRB
+                            # page 22
+                            # unsigned 5 bit imm
+                            thoughtval = (armins >> 6) & 0x1F
+                            if thoughtval != self.value:
+                                raise ValueNotFoundError
+                            imm5 = self._imm(5)
+                            self.patch_value_expression = imm5.zero_extend(self.bits-5)
+                            self.patch_bytes_expression = claripy.Concat(
+                                    BVV(armins >> 11, 5),
+                                    imm5,
+                                    BVV(armins & 0x3F, 6)
+                                )
+                            self._test_values = (1, 0x1f)
                         else:
                             raise ValueNotFoundError
 
