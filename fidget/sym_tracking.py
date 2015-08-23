@@ -260,7 +260,7 @@ class StructureAnalysis(object):
                 if block.jumpkind == 'Ijk_Call' and self.project.arch.call_pushes_ret:
                     # Pop the return address off the stack and keep going
                     stack = blockstate.get_reg(self.project.arch.sp_offset, self.project.arch.bits)
-                    popped = stack.deps[0] if stack.deps[0].taints['pointer'] else stack.deps[1]
+                    popped = stack.args[0] if stack.args[0].taints['pointer'] else stack.args[1]
                     blockstate.regs[self.project.arch.sp_offset] = popped
                     # Discard the last two tags -- they'll be an alloc and an access for the call
                     # (the push and the retaddr)
@@ -452,6 +452,41 @@ class BlockState:
                 continue
             self.access(value, AccessType.POINTER)
 
+bd_cache = {}
+
+class PendingBinaryData(object):
+    def __init__(self, project, addr, value, sym_value, path):
+        self.project = project
+        self.addr = addr
+        self.value = value
+        self.sym_value = sym_value
+        self.path = tuple(path)
+        self._hash = None
+
+    def __hash__(self):
+        if not self._hash: self._hash = hash(('pbd', self.project.filename, self.addr, self.value, self.path))
+        return self._hash
+
+    def resolve(self):
+        if hash(self) in bd_cache:
+            return bd_cache[hash(self)]
+        else:
+            try:
+                binary_data = BinaryData(
+                        self.project,
+                        self.addr,
+                        self.value,
+                        path=list(self.path) + ['con', 'value']
+                    )
+            except ValueNotFoundError as e:
+                l.debug(e.message)
+                binary_data = self.value
+            out = (self.sym_value, binary_data)
+            bd_cache[hash(self)] = out
+            return out
+
+
+
 class SmartExpression:
     def __init__(self, blockstate, vexpression, addr, path):
         self.blockstate = blockstate
@@ -460,9 +495,8 @@ class SmartExpression:
         self.path = path
         self.project = self.blockstate.project
         self.deps = []
+        self.args = []
         self.taints = defaultdict(bool)
-        self.rootval = False
-        self._bindata = [None]
         self.size = vexpression.result_size if not vexpression.tag.startswith('Ico_') else vexpression.size
         self.type = vexpression.result_type if not vexpression.tag.startswith('Ico_') else vexpression.type
         self.cleanval = vexutils.make_default_value(self.type)
@@ -490,8 +524,9 @@ class SmartExpression:
             else:
                 self.cleanval = claripy.BVV(vexpression.value, self.size)
                 self.dirtyval = claripy.BV('%x_%d' % (addr, path[1]), self.size)
-            self.rootval = True
+            self.deps.append(PendingBinaryData(self.project, self.addr, self.cleanval.model.value, self.dirtyval, self.path))
             self.taints['concrete'] = True
+            self.taints['concrete_root'] = True
         elif vexpression.tag == 'Iex_ITE':
             false_expr = SmartExpression(blockstate, vexpression.iffalse, addr, path + ['iffalse'])
             truth_expr = SmartExpression(blockstate, vexpression.iftrue, addr, path + ['iftrue'])
@@ -510,21 +545,23 @@ class SmartExpression:
                     arg = SmartExpression(blockstate, expr, addr, path + ['args', i])
                     self.taints['concrete'] = self.taints['concrete'] and arg.taints['concrete']
                     self.taints['it'] = self.taints['it'] or arg.taints['it']
-                    self.deps.append(arg)
+                    self.args.append(arg)
                 if vexpression.op.startswith('Iop_Mul') or vexpression.op.startswith('Iop_And'):
-                    self.shield_constants(self.deps)
+                    self.shield_constants(self.args)
                 if vexpression.op in ROUNDING_IROPS:
-                    self.shield_constants(self.deps, whitelist=[0])
-                self.cleanval = operations[vexpression.op].calculate(*(x.cleanval for x in self.deps))
-                self.dirtyval = operations[vexpression.op].calculate(*(x.dirtyval for x in self.deps))
+                    self.shield_constants(self.args, whitelist=[0])
+                for arg in self.args:
+                    self.deps.extend(arg.deps)
+                self.cleanval = operations[vexpression.op].calculate(*(x.cleanval for x in self.args))
+                self.dirtyval = operations[vexpression.op].calculate(*(x.dirtyval for x in self.args))
                 if vexpression.op.startswith('Iop_Add') or vexpression.op.startswith('Iop_And') or \
                    vexpression.op.startswith('Iop_Or') or vexpression.op.startswith('Iop_Xor'):
-                    t1 = self.deps[0].taints['pointer']
-                    t2 = self.deps[1].taints['pointer']
+                    t1 = self.args[0].taints['pointer']
+                    t2 = self.args[1].taints['pointer']
                     self.taints['pointer'] = (t1 if t1 else t2) if (bool(t1) ^ bool(t2)) else False
                 elif vexpression.op.startswith('Iop_Sub'):
-                    t1 = self.deps[0].taints['pointer']
-                    t2 = self.deps[1].taints['pointer']
+                    t1 = self.args[0].taints['pointer']
+                    t2 = self.args[1].taints['pointer']
                     self.taints['pointer'] = t1 if t1 and not t2 else False
             except SimOperationError:
                 l.exception("SimOperationError while running op '%s', returning null", vexpression.op)
@@ -541,66 +578,30 @@ class SmartExpression:
         else:
             raise FidgetUnsupportedError('Unknown expression tag ({:#x}): {!r}'.format(addr, vexpression.tag))
 
-    @property
-    def bindata(self):
-        return self._bindata[0]
-
-    @bindata.setter
-    def bindata(self, value):
-        self._bindata[0] = value
-
     def copy_to_self(self, other):
         self.cleanval = other.cleanval
         self.dirtyval = other.dirtyval
         self.deps = other.deps
+        self.args = other.args
         self.addr = other.addr
-        self._bindata = other._bindata
         self.taints = defaultdict(bool, other.taints)
-        self.rootval = other.rootval
         self.path = other.path
 
     @staticmethod
     def shield_constants(expr_list, whitelist=None):
         for i, expr in enumerate(expr_list):
             if whitelist is not None and i not in whitelist: continue
-            if expr.rootval:
+            if expr.taints['concrete_root']:
                 expr_list[i] = ConstExpression(expr.cleanval, expr.type, expr.taints['concrete'])
 
     def make_bindata(self, flags):
         # this is the top level call. It returns a BinaryDataConglomerate.
         # flags is the access type
         data = BinaryDataConglomerate(self.addr, self.cleanval.model.signed, self.dirtyval, flags)
-        for dirtyval, bindata in self.make_bindata_internal():
+        for resolver in self.deps:
+            dirtyval, bindata = resolver.resolve()
             data.add(bindata, dirtyval)
         return data
-
-    def make_bindata_internal(self):
-        # this makes sure that self.bindata is populated with a list of tuples (a, b)
-        # where a is the symbolic value hooked directly to an instruction and b is
-        # the BinaryData instance related to that instruction. If the BinaryData cannot
-        # be constructed (Value Not Found Error), it will be the integer value that it
-        # needs to stay fixed as.
-        # it also returns self.bindata
-        if self.bindata is not None:
-            return self.bindata
-        if self.rootval:
-            try:
-                binary_data = BinaryData(
-                        self.project,
-                        self.addr,
-                        self.cleanval.model.value,
-                        path=self.path + ['con', 'value']
-                    )
-            except ValueNotFoundError as e:
-                l.debug(e.message)
-                binary_data = self.cleanval.model.value
-            self.bindata = [(self.dirtyval, binary_data)]
-            return self.bindata
-        else:
-            self.bindata = []
-            for dep in self.deps:
-                self.bindata.extend(dep.make_bindata_internal())
-            return self.bindata
 
     def overwrite(self, other):
         if self.size > other.size:
@@ -611,7 +612,8 @@ class SmartExpression:
         smaller = self
         larger = other
         out = CustomExpression()
-        out.deps = [smaller, larger]
+        out.deps = smaller.deps + larger.deps
+        out.args = []
         out.size = larger.size
         out.type = larger.type
         out.blockstate = smaller.blockstate
@@ -621,8 +623,6 @@ class SmartExpression:
         out.taints = defaultdict(bool)
         out.taints['pointer'] = larger.taints['pointer']  # sketchy...
         out.taints['concrete'] = larger.taints['concrete'] and smaller.taints['concrete']
-        out.rootval = False
-        out._bindata = [None]
         out.cleanval = claripy.Concat(larger.cleanval[larger.size-1:smaller.size], smaller.cleanval)
         out.dirtyval = claripy.Concat(larger.dirtyval[larger.size-1:smaller.size], smaller.dirtyval)
         return out
@@ -637,7 +637,8 @@ class SmartExpression:
             l.error("Attempting to truncate SmartExpression of size %d to size %d", self.size, size_bits)
             return self
         out = CustomExpression()
-        out.deps = [self]
+        out.deps = self.deps
+        out.args = []
         out.size = size_bits
         out.type = ty
         out.blockstate = self.blockstate
@@ -645,8 +646,6 @@ class SmartExpression:
         out.path = self.path
         out.project = out.blockstate.project
         out.taints = defaultdict(bool, concrete=self.taints['concrete'])
-        out.rootval = False
-        out._bindata = [None]
         out.cleanval = self.cleanval[size_bits-1:0]
         out.dirtyval = self.dirtyval[size_bits-1:0]
         return out
@@ -665,9 +664,8 @@ class ConstExpression(object):
         self.cleanval = val
         self.dirtyval = val
         self.deps = []
+        self.args = []
         self.taints = defaultdict(bool, concrete=concrete)
-        self._bindata = [None]
-        self.rootval = False
         self.addr = None
         self.path = []
 
