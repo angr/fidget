@@ -455,6 +455,7 @@ class BlockState:
 bd_cache = {}
 
 class PendingBinaryData(object):
+    __slots__ = ('project', 'addr', 'value', 'sym_value', 'path', '_hash')
     def __init__(self, project, addr, value, sym_value, path):
         self.project = project
         self.addr = addr
@@ -467,9 +468,12 @@ class PendingBinaryData(object):
         if not self._hash: self._hash = hash(('pbd', self.project.filename, self.addr, self.value, self.path))
         return self._hash
 
+    def __eq__(self, other):
+        return self.project.filename == other.project.filename and self.addr == other.addr and self.value == other.value and self.path == other.path
+
     def resolve(self):
-        if hash(self) in bd_cache:
-            return bd_cache[hash(self)]
+        if self in bd_cache:
+            return bd_cache[self]
         else:
             try:
                 binary_data = BinaryData(
@@ -482,7 +486,7 @@ class PendingBinaryData(object):
                 l.debug(e.message)
                 binary_data = self.value
             out = (self.sym_value, binary_data)
-            bd_cache[hash(self)] = out
+            bd_cache[self] = out
             return out
 
 
