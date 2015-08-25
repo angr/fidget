@@ -5,8 +5,9 @@ import claripy
 from .binary_data import BinaryData, BinaryDataConglomerate
 from .stack_magic import Struct
 from .errors import FidgetError, FidgetUnsupportedError, ValueNotFoundError, FidgetAnalysisFailure
+from .bihead import BiHead
 from . import vexutils
-from simuvex import operations, SimOperationError
+from simuvex import operations, SimOperationError, SimState, s_options as sim_options
 
 from collections import defaultdict
 
@@ -152,10 +153,10 @@ class StructureAnalysis(object):
     def analyze_stack(self, funcaddr):
         struct = Struct(self.project.arch, is_stack_frame=True)
         initial_state = BlockState(self.project, funcaddr, taint_region=struct.name)
-        stackexp = ConstExpression(claripy.BVV(0, self.project.arch.bits), 'Ity_I%d' % self.project.arch.bits, True)
-        stackexp.taints['pointer'] = struct.name
-        stackexp.addr = funcaddr
-        initial_state.regs[self.project.arch.sp_offset] = stackexp
+        sp = initial_state.state.regs.sp
+        sp.taints['pointer'] = struct.name
+        sp.taints['concrete'] = True
+        initial_state.state.regs.sp = sp
 
         queue = [initial_state]
         headcache = set()
@@ -190,6 +191,7 @@ class StructureAnalysis(object):
                 insnblock = blockstate.lift(addr, num_inst=1, max_size=400, opt_level=1)
                 temps = TempStore(insnblock.tyenv)
                 blockstate.load_tempstore(temps)
+                blockstate.addr = addr
                 stmtgen = enumerate(insnblock.statements)
                 for _, stmt in stmtgen:
                     if isinstance(stmt, pyvex.IRStmt.IMark): break
@@ -200,51 +202,64 @@ class StructureAnalysis(object):
                         pass
 
                     elif stmt.tag == 'Ist_Exit':
-                        SmartExpression(blockstate, stmt.dst, addr, path + ['dst'])
+                        handle_expression(blockstate, stmt.dst, path + ['dst'])
                         # Let the cfg take care of control flow!
 
-                    elif stmt.tag in ('Ist_WrTmp', 'Ist_Store', 'Ist_Put'):
-                        this_expression = SmartExpression(blockstate, stmt.data, addr, path + ['data'])
-                        blockstate.assign(stmt, this_expression, stmt_idx)
+                    elif stmt.tag == 'Ist_WrTmp':
+                        expression = handle_expression(blockstate, stmt.data, path + ['data'])
+                        blockstate.put_tmp(stmt.tmp, expression)
+
+                    elif stmt.tag == 'Ist_Store':
+                        expression = handle_expression(blockstate, stmt.data, path + ['data'])
+                        address = handle_expression(blockstate, stmt.addr, path + ['addr'])
+                        blockstate.put_mem(address, expression)
+                        blockstate.access(address, AccessType.WRITE)
+                        blockstate.access(expression, AccessType.POINTER)
+
+                    elif stmt.tag == 'Ist_Put':
+                        expression = handle_expression(blockstate, stmt.data, path + ['data'])
+                        blockstate.put_reg(stmt.offset, expression)
+                        if stmt.offset == self.project.arch.sp_offset:
+                            if not expression.taints['concrete']:
+                                l.warning("This function appears to use alloca(). Abort.")
+                                import ipdb; ipdb.set_trace()
+                                raise FidgetAnalysisFailure
+                            blockstate.alloc(expression)
 
                     elif stmt.tag == 'Ist_LoadG':
                         # Conditional loads. Lots of bullshit.
-                        addr_expression = SmartExpression(blockstate, stmt.addr, addr, path + ['addr'])
+                        addr_expression = handle_expression(blockstate, stmt.addr, path + ['addr'])
                         blockstate.access(addr_expression, AccessType.READ)
 
                         # load the actual data
                         data_expression = blockstate.get_mem(addr_expression, stmt.cvt_types[0])
                         # it then needs a type conversion applied to it
-                        cvt_data_expression = CustomExpression()
-                        cvt_data_expression.copy_to_self(data_expression)
-                        cvt_data_expression.type = stmt.cvt_types[1]
                         conv_diff = vexutils.extract_int(stmt.cvt_types[1]) - vexutils.extract_int(stmt.cvt_types[0])
                         if conv_diff != 0:
+                            concrete = data_expression.taints['concrete']
+                            deps = data_expression.taints['deps']
                             if 'S' in stmt.cvt:
-                                cvt_data_expression.cleanval = cvt_data_expression.cleanval.sign_extend(conv_diff)
-                                cvt_data_expression.dirtyval = cvt_data_expression.dirtyval.sign_extend(conv_diff)
+                                data_expression = data_expression.sign_extend(conv_diff)
                             else:
-                                cvt_data_expression.cleanval = cvt_data_expression.cleanval.zero_extend(conv_diff)
-                                cvt_data_expression.dirtyval = cvt_data_expression.dirtyval.zero_extend(conv_diff)
+                                data_expression = data_expression.zero_extend(conv_diff)
+                            data_expression.taints['concrete'] = concrete
+                            data_expression.taints['deps'] = deps
 
-                        temps.write(stmt.dst, cvt_data_expression)
-                        SmartExpression(blockstate, stmt.guard, addr, path + ['guard'])
-                        SmartExpression(blockstate, stmt.alt, addr, path + ['alt'])
+                        blockstate.put_tmp(stmt.dst, data_expression)
+                        handle_expression(blockstate, stmt.guard, path + ['guard'])
+                        handle_expression(blockstate, stmt.alt, path + ['alt'])
 
                     elif stmt.tag == 'Ist_StoreG':
                         # Conditional store
-                        addr_expr = SmartExpression(blockstate, stmt.addr, addr, path + ['addr'])
-                        value_expr = SmartExpression(blockstate, stmt.data, addr, path + ['data'])
+                        addr_expr = handle_expression(blockstate, stmt.addr, path + ['addr'])
+                        value_expr = handle_expression(blockstate, stmt.data, path + ['data'])
+                        handle_expression(blockstate, stmt.guard, path + ['guard'])
+                        blockstate.put_mem(addr_expr, value_expr)
                         blockstate.access(addr_expr, AccessType.WRITE)
-                        if addr_expr.taints['pointer']:
-                            blockstate.mem_regions[addr_expr.taints['pointer']][addr_expr.cleanval] = value_expr
-                        if value_expr.taints['pointer'] == struct.name:
-                            blockstate.access(value_expr, AccessType.POINTER)
-
-                        SmartExpression(blockstate, stmt.guard, addr, path + ['guard'])
+                        blockstate.access(value_expr, AccessType.POINTER)
 
                     elif stmt.tag == 'Ist_PutI':    # haha no
-                        SmartExpression(blockstate, stmt.data, addr, path + ['data'])
+                        handle_expression(blockstate, stmt.data, path + ['data'])
                     elif stmt.tag == 'Ist_CAS':     # HA ha no
                         if stmt.oldLo != 4294967295:
                             blockstate.tempstore.default(stmt.oldLo)
@@ -256,17 +271,22 @@ class StructureAnalysis(object):
                     else:
                         raise FidgetUnsupportedError("Unknown vex instruction???", stmt)
 
-            if block.jumpkind == 'Ijk_Call' or block.jumpkind in OK_CONTINUE_JUMPS:
-                if block.jumpkind == 'Ijk_Call' and self.project.arch.call_pushes_ret:
-                    # Pop the return address off the stack and keep going
-                    stack = blockstate.get_reg(self.project.arch.sp_offset, self.project.arch.bits)
-                    popped = stack.args[0] if stack.args[0].taints['pointer'] else stack.args[1]
-                    blockstate.regs[self.project.arch.sp_offset] = popped
-                    # Discard the last two tags -- they'll be an alloc and an access for the call
-                    # (the push and the retaddr)
-                    blockstate.tags = blockstate.tags[:-2]
+            if block.jumpkind == 'Ijk_Call' and self.project.arch.call_pushes_ret:
+                # Pop the return address off the stack and keep going
+                stack = blockstate.state.regs.sp
+                popped = stack - self.project.arch.stack_change
+                # Discard the last two tags -- they'll be an alloc and an access for the call
+                # (the push and the retaddr)
+                popped.taints = stack.taints
+                # Do NOT discard the regs, as they constrain the amount that was added to sizeof(void*)
+                blockstate.state.regs.sp = popped
+                blockstate.tags = blockstate.tags[:-2]
 
-                for context in self.cfg.get_all_nodes(blockstate.addr):
+            blockstate.end()
+
+            if block.jumpkind == 'Ijk_Call' or block.jumpkind in OK_CONTINUE_JUMPS:
+
+                for context in self.cfg.get_all_nodes(blockstate.block_addr):
                     for node, jumpkind in self.cfg.get_successors_and_jumpkind( \
                                             context, \
                                             excluding_fakeret=False):
@@ -288,7 +308,6 @@ class StructureAnalysis(object):
             else:
                 raise FidgetError("(%#x) Can't proceed from unknown jumpkind %s" % (blockstate.addr, block.jumpkind))
 
-            blockstate.end()
             for tag, bindata in blockstate.tags:
                 if tag == 'ALLOC':
                     l.debug("Got tag: %#0.8x  ALLOC %#x", bindata.addr, bindata.value)
@@ -318,15 +337,12 @@ class TempStore(object):
         return vexutils.extract_int(self.tyenv.types[tmp])
 
     def write(self, tmp, value):
-        if value.type != self.tyenv.types[tmp]:
+        if value.length != self.size_of(tmp):
             raise ValueError('Invalid type!')
-        size = self.size_of(tmp)
-        value.cleanval = vexutils.ZExtTo(size, value.cleanval)
-        value.dirtyval = vexutils.ZExtTo(size, value.dirtyval)
         self.storage[tmp] = value
 
     def default(self, tmp):
-        val = ConstExpression.default(self.tyenv.types[tmp])
+        val = BiHead.default(self.tyenv.types[tmp])
         self.write(tmp, val)
 
 class AccessType:       # pylint: disable=no-init
@@ -337,34 +353,29 @@ class AccessType:       # pylint: disable=no-init
     mapping = {0: '<none>', 1: 'READ', 2: 'WRITE', 4: 'POINTER', 8: 'UNINITREAD'}
 
 class BlockState:
-    def __init__(self, project, addr, taint_region=None):
+    def __init__(self, project, addr, state=None, taint_region=None):
         self.project = project
         self.addr = addr
+        self.block_addr = addr
         self.taint_region = taint_region
+        self.state = state
 
         self.tempstore = None
-        self.regs = {}
-        self.mem_regions = defaultdict(dict)
         self.tags = []
 
-        if project.arch.name == 'AMD64':
-            self.regs[144] = ConstExpression.default('Ity_I64')
-            self.regs[156] = ConstExpression.default('Ity_I64')
-        elif project.arch.name == 'X86':
-            self.regs[216] = ConstExpression.default('Ity_I32')
-            self.regs[884] = ConstExpression.default('Ity_I32')
-        elif project.arch.name.startswith('ARM'):
-            self.regs[project.arch.registers['itstate'][0]] = ConstExpression.default('Ity_I32')
-            self.regs[project.arch.registers['itstate'][0]].taints['it'] = True
+        if self.state is None:
+            self.state = SimState(arch=project.arch,
+                    mode='symbolic',
+                    special_memory_filler=lambda name, bits: BiHead(claripy.BVV(0, bits), claripy.BVV(0, bits)),
+                    add_options={sim_options.ABSTRACT_MEMORY, sim_options.SPECIAL_MEMORY_FILL}
+                )
+            if project.arch.name.startswith('ARM'):
+                it = self.state.regs.itstate
+                it.taints['it'] = True
+                self.state.regs.itstate = it
 
     def copy(self, newaddr):
-        out = BlockState(self.project, newaddr, taint_region=self.taint_region)
-
-        # copy over all registers that hold pointers to the stack
-        for offset, val in self.regs.iteritems():
-            if val.taints['pointer']:
-                out.regs[offset] = val
-        return out
+        return BlockState(self.project, newaddr, state=self.state.copy(), taint_region=self.taint_region)
 
     def lift(self, addr=None, **options):
         if addr is None: addr = self.addr
@@ -373,94 +384,85 @@ class BlockState:
     def load_tempstore(self, tempstore):
         self.tempstore = tempstore
 
-    def get_reg(self, regnum, ty):
+    def get_reg(self, offset, ty):
         if isinstance(ty, (int, long)):
             ty = 'Ity_I%d' % ty
+        size = vexutils.extract_int(ty)
+        val = self.state.registers.load(offset, size/8)
+        if ty.startswith('Ity_F'):
+            val = val.raw_to_fp()
+        return val
 
-        if not regnum in self.regs:
-            if 'F' in ty or vexutils.extract_int(ty) > self.project.arch.bits:
-                self.regs[regnum] = ConstExpression.default(ty)
-            else:
-                self.regs[regnum] = ConstExpression.default('Ity_I%d' % self.project.arch.bits)
-            return self.regs[regnum].truncate(ty)
-
-        if 'F' in self.regs[regnum].type:
-            if self.regs[regnum].type.split('_')[1] != ty.split('_')[1]:
-                l.warning("Don't know how to change type %s to %s, discarding", self.regs[regnum].type, ty)
-                self.regs[regnum] = ConstExpression.default(ty)
-            return self.regs[regnum]
-        else:
-            return self.regs[regnum].truncate(ty)
-
+    def put_reg(self, offset, val):
+        self.state.registers.store(offset, val)
 
     def get_tmp(self, tmpnum):
         return self.tempstore.read(tmpnum)
 
+    def put_tmp(self, tmpnum, val):
+        self.tempstore.write(tmpnum, val)
+
     def get_mem(self, addr, ty):
-        if addr.taints['pointer']:
-            if addr.cleanval in self.mem_regions[addr.taints['pointer']]:
-                val = self.mem_regions[addr.taints['pointer']][addr.cleanval]
-                if val.type == ty:
-                    return val
-            return ConstExpression.default(ty)
-        cleanestval = addr.cleanval.model.value
-        if cleanestval in self.project.loader.memory and 'F' not in ty:    # TODO: support this
-            size_bytes = vexutils.extract_int(ty)/8
-            strval = ''.join(self.project.loader.memory[cleanestval + i] for i in xrange(size_bytes))
-            if self.project.arch.memory_endness == 'Iend_LE':
-                strval = str(reversed(strval))
-            intval = int(strval.encode('hex'), 16)
-            return ConstExpression(claripy.BVV(intval, size_bytes*8), ty, True)
-        return ConstExpression.default(ty)
+        if isinstance(ty, (int, long)):
+            ty = 'Ity_I%d' % ty
+        size = vexutils.extract_int(ty)
+        addr_vs = self.state.se.VS(bits=self.state.arch.bits, region=addr.taints['pointer'] if addr.taints['pointer'] else 'global', val=addr.as_unsigned)
+        val = self.state.memory.load(addr_vs, size/8, endness=self.state.arch.memory_endness)
+        if ty.startswith('Ity_F'):
+            val = val.raw_to_fp()
+        return val
+
+    def put_mem(self, addr, val):
+        if not addr.taints['pointer']:
+            return      # don't store anything to memory that's not an accounted-for region
+        addr_vs = self.state.se.VS(bits=self.state.arch.bits, region=addr.taints['pointer'], val=addr.as_unsigned)
+        self.state.memory.store(addr_vs, val, endness=self.state.arch.memory_endness)
 
     def access(self, addr_expression, access_type):
         if addr_expression.taints['pointer'] != self.taint_region:
             return
-        self.tags.append(('ACCESS', addr_expression.make_bindata(access_type)))
+        self.tags.append(('ACCESS', make_bindata(addr_expression, self.addr, access_type)))
 
-    def assign(self, vextatement, expression, stmt_idx):
-        if vextatement.tag == 'Ist_WrTmp':
-            self.tempstore.write(vextatement.tmp, expression)
-        elif vextatement.tag == 'Ist_Put':
-            if 'F' in expression.type or expression.size > self.project.arch.bits:
-                self.regs[vextatement.offset] = expression
-            else:
-                if not vextatement.offset in self.regs:
-                    self.regs[vextatement.offset] = ConstExpression.default('Ity_I%d' % self.project.arch.bits)
-                self.regs[vextatement.offset] = expression.overwrite(self.regs[vextatement.offset])
-            if vextatement.offset == self.project.arch.sp_offset and 'stack' in self.taint_region:
-                if not expression.taints['concrete']:
-                    l.warning("This function appears to use alloca(). Abort.")
-                    raise FidgetAnalysisFailure
-                elif expression.cleanval.model.value == 0:
-                    self.tags.append(('ALLOC', expression.make_bindata(0)))
-                else:
-                    self.tags.append(('ALLOC', expression.make_bindata(0)))
-        elif vextatement.tag == 'Ist_Store':
-            addr_expr = SmartExpression(self, vextatement.addr, expression.addr, ['statements', stmt_idx, 'addr'])
-            self.access(addr_expr, AccessType.WRITE)
-            if addr_expr.taints['pointer']:
-                self.mem_regions[addr_expr.taints['pointer']][addr_expr.cleanval] = expression
-            if expression.taints['pointer']:
-                self.access(expression, AccessType.POINTER)
+    def alloc(self, addr_expression):
+        self.tags.append(('ALLOC', make_bindata(addr_expression, self.addr, 0)))
 
     def end(self):
-        for offset, value in self.regs.iteritems():
+        for offset, name in self.project.arch.register_names.iteritems():
             if offset in (self.project.arch.sp_offset, self.project.arch.bp_offset, self.project.arch.ip_offset):
                 continue
             if offset == 36 and self.project.arch.name.startswith('ARM') and self.addr & 1 == 1:
                 continue
-            self.access(value, AccessType.POINTER)
+            value = getattr(self.state.regs, name)
+            if value.taints['concrete'] and not value.taints['pointer']:
+                value = BiHead(value.cleanval, value.cleanval)
+                self.state.registers.store(offset, value)
+            else:
+                self.access(value, AccessType.POINTER)
+
+        # TODO: This is really inefficient!!!
+        for region in self.state.memory.regions.itervalues():
+            done = set()
+            for addr in sorted(region._memory.mem.keys()):
+                if addr in done:
+                    continue
+                value = region._memory.load(addr, self.state.arch.bytes, endness=self.state.arch.memory_endness)
+                if value.taints['pointer']:
+                    for i in range(addr, addr + self.state.arch.bytes):
+                        done.add(i)
+                else:
+                    replacement = region._memory.load(addr, 1).cleanval
+                    replacement = BiHead(replacement, replacement)
+                    region._memory.store(addr, replacement)
 
 bd_cache = {}
 
 class PendingBinaryData(object):
     __slots__ = ('project', 'addr', 'value', 'sym_value', 'path', '_hash')
-    def __init__(self, project, addr, value, sym_value, path):
+    def __init__(self, project, addr, values, path):
         self.project = project
         self.addr = addr
-        self.value = value
-        self.sym_value = sym_value
+        self.value = values.as_unsigned
+        self.sym_value = values.dirtyval
         self.path = tuple(path)
         self._hash = None
 
@@ -490,204 +492,106 @@ class PendingBinaryData(object):
             return out
 
 
-
-class SmartExpression:
-    def __init__(self, blockstate, vexpression, addr, path):
-        self.blockstate = blockstate
-        self.vexpression = vexpression
-        self.addr = addr
-        self.path = path
-        self.project = self.blockstate.project
-        self.deps = []
-        self.args = []
-        self.taints = defaultdict(bool)
-        self.size = vexpression.result_size if not vexpression.tag.startswith('Ico_') else vexpression.size
-        self.type = vexpression.result_type if not vexpression.tag.startswith('Ico_') else vexpression.type
-        self.cleanval = vexutils.make_default_value(self.type)
-        self.dirtyval = vexutils.make_default_value(self.type)
-        if vexpression.tag == 'Iex_Get':
-            self.copy_to_self(blockstate.get_reg(vexpression.offset, self.type))
-        elif vexpression.tag == 'Iex_RdTmp':
-            self.copy_to_self(self.blockstate.get_tmp(vexpression.tmp))
-        elif vexpression.tag == 'Iex_Load':
-            addr_expression = SmartExpression(blockstate, vexpression.addr, addr, path + ['addr'])
-            self.blockstate.access(addr_expression, AccessType.READ)
-            self.copy_to_self(self.blockstate.get_mem(addr_expression, self.type))
-        elif vexpression.tag == 'Iex_Const' or vexpression.tag.startswith('Ico_'):
-            if vexpression.tag == 'Iex_Const':
-                vexpression = vexpression.con
-            if 'F' in self.type:
-                if self.size == 32:
-                    self.cleanval = claripy.FPV(vexpression.value, claripy.fp.FSORT_FLOAT)
-                    self.dirtyval = claripy.FloatingPoint('%x_%d' % (addr, path[1]), claripy.fp.FSORT_FLOAT)
-                elif self.size == 64:
-                    self.cleanval = claripy.FPV(vexpression.value, claripy.fp.FSORT_DOUBLE)
-                    self.dirtyval = claripy.FloatingPoint('%x_%d' % (addr, path[1]), claripy.fp.FSORT_DOUBLE)
-                else:
-                    raise FidgetUnsupportedError("Why is there a FP const of size %d" % self.size)
+def handle_expression(blockstate, vexpression, path):
+    size = vexpression.result_size if not vexpression.tag.startswith('Ico_') else vexpression.size
+    ty = vexpression.result_type if not vexpression.tag.startswith('Ico_') else vexpression.type
+    addr = blockstate.addr
+    if vexpression.tag == 'Iex_Get':
+        return blockstate.get_reg(vexpression.offset, ty)
+    elif vexpression.tag == 'Iex_RdTmp':
+        return blockstate.get_tmp(vexpression.tmp)
+    elif vexpression.tag == 'Iex_Load':
+        addr_expression = handle_expression(blockstate, vexpression.addr, path + ['addr'])
+        blockstate.access(addr_expression, AccessType.READ)
+        return blockstate.get_mem(addr_expression, ty)
+    elif vexpression.tag == 'Iex_Const' or vexpression.tag.startswith('Ico_'):
+        if vexpression.tag == 'Iex_Const':
+            vexpression = vexpression.con
+        if 'F' in ty:
+            if size == 32:
+                values = BiHead(
+                        claripy.FPV(vexpression.value, claripy.fp.FSORT_FLOAT),
+                        claripy.FloatingPoint('%x_%d' % (addr, path[1]), claripy.fp.FSORT_FLOAT)
+                    )
+            elif size == 64:
+                values = BiHead(
+                        claripy.FPV(vexpression.value, claripy.fp.FSORT_DOUBLE),
+                        claripy.FloatingPoint('%x_%d' % (addr, path[1]), claripy.fp.FSORT_DOUBLE)
+                    )
             else:
-                self.cleanval = claripy.BVV(vexpression.value, self.size)
-                self.dirtyval = claripy.BV('%x_%d' % (addr, path[1]), self.size)
-            self.deps.append(PendingBinaryData(self.project, self.addr, self.cleanval.model.value, self.dirtyval, self.path))
-            self.taints['concrete'] = True
-            self.taints['concrete_root'] = True
-        elif vexpression.tag == 'Iex_ITE':
-            false_expr = SmartExpression(blockstate, vexpression.iffalse, addr, path + ['iffalse'])
-            truth_expr = SmartExpression(blockstate, vexpression.iftrue, addr, path + ['iftrue'])
-            if truth_expr.taints['pointer']:
-                self.copy_to_self(truth_expr)
-            else:
-                self.copy_to_self(false_expr)
-            cond_expr = SmartExpression(blockstate, vexpression.cond, addr, path + ['cond'])
-            if not cond_expr.taints['it']:
-                self.taints['concrete'] = false_expr.taints['concrete'] and truth_expr.taints['concrete']
-            self.taints['it'] = false_expr.taints['it'] or truth_expr.taints['it']
-        elif vexpression.tag in ('Iex_Unop','Iex_Binop','Iex_Triop','Iex_Qop'):
-            try:
-                self.taints['concrete'] = True
-                for i, expr in enumerate(vexpression.args):
-                    arg = SmartExpression(blockstate, expr, addr, path + ['args', i])
-                    self.taints['concrete'] = self.taints['concrete'] and arg.taints['concrete']
-                    self.taints['it'] = self.taints['it'] or arg.taints['it']
-                    self.args.append(arg)
-                if vexpression.op.startswith('Iop_Mul') or vexpression.op.startswith('Iop_And'):
-                    self.shield_constants(self.args)
-                if vexpression.op in ROUNDING_IROPS:
-                    self.shield_constants(self.args, whitelist=[0])
-                for arg in self.args:
-                    self.deps.extend(arg.deps)
-                self.cleanval = operations[vexpression.op].calculate(*(x.cleanval for x in self.args))
-                self.dirtyval = operations[vexpression.op].calculate(*(x.dirtyval for x in self.args))
-                if vexpression.op.startswith('Iop_Add') or vexpression.op.startswith('Iop_And') or \
-                   vexpression.op.startswith('Iop_Or') or vexpression.op.startswith('Iop_Xor'):
-                    t1 = self.args[0].taints['pointer']
-                    t2 = self.args[1].taints['pointer']
-                    self.taints['pointer'] = (t1 if t1 else t2) if (bool(t1) ^ bool(t2)) else False
-                elif vexpression.op.startswith('Iop_Sub'):
-                    t1 = self.args[0].taints['pointer']
-                    t2 = self.args[1].taints['pointer']
-                    self.taints['pointer'] = t1 if t1 and not t2 else False
-            except SimOperationError:
-                l.exception("SimOperationError while running op '%s', returning null", vexpression.op)
-                self.taints['concrete'] = False
-            except KeyError:
-                l.error("Unsupported operation '%s', returning null", vexpression.op)
-                self.taints['concrete'] = False
-        elif vexpression.tag == 'Iex_CCall':
-            for i, expr in enumerate(vexpression.args):
-                arg = SmartExpression(blockstate, expr, addr, path + ['args', i])
-                self.taints['it'] = self.taints['it'] or arg.taints['it']
-        elif vexpression.tag == 'Iex_GetI':
-            pass
+                raise FidgetUnsupportedError("Why is there a FP const of size %d" % size)
         else:
-            raise FidgetUnsupportedError('Unknown expression tag ({:#x}): {!r}'.format(addr, vexpression.tag))
+            values = BiHead(
+                    claripy.BVV(vexpression.value, size),
+                    claripy.BV('%x_%d' % (addr, path[1]), size)
+                )
+        values.taints['deps'].append(PendingBinaryData(blockstate.project, blockstate.addr, values, path))
+        values.taints['concrete'] = True
+        values.taints['concrete_root'] = True
+        return values
+    elif vexpression.tag == 'Iex_ITE':
+        false_expr = handle_expression(blockstate, vexpression.iffalse, path + ['iffalse'])
+        truth_expr = handle_expression(blockstate, vexpression.iftrue, path + ['iftrue'])
+        values = truth_expr if truth_expr.taints['pointer'] else false_expr
+        cond_expr = handle_expression(blockstate, vexpression.cond, path + ['cond'])
+        if not cond_expr.taints['it']:
+            values.taints['concrete'] = false_expr.taints['concrete'] and truth_expr.taints['concrete']
+        values.taints['it'] = false_expr.taints['it'] or truth_expr.taints['it']
+        return values
+    elif vexpression.tag in ('Iex_Unop','Iex_Binop','Iex_Triop','Iex_Qop'):
+        args = []
+        for i, expr in enumerate(vexpression.args):
+            arg = handle_expression(blockstate, expr, path + ['args', i])
+            if vexpression.op.startswith('Iop_Mul') or vexpression.op.startswith('Iop_And') \
+                    or (i == 0 and vexpression.op in ROUNDING_IROPS):
+                if arg.taints['concrete_root']:
+                    arg = BiHead(arg.cleanval, arg.cleanval)
+                    arg.taints['concrete'] = True
+            args.append(arg)
+        try:
+            values = BiHead(
+                    operations[vexpression.op].calculate(*(x.cleanval for x in args)),
+                    operations[vexpression.op].calculate(*(x.dirtyval for x in args))
+                )
+        except SimOperationError:
+            l.exception("SimOperationError while running op '%s', returning null", vexpression.op)
+            return BiHead.default(ty)
+        except KeyError:
+            l.error("Unsupported operation '%s', returning null", vexpression.op)
+            return BiHead.default(ty)
+        else:
+            # propogate the taints correctly
+            values.taints['concrete'] = True
+            for arg in args:
+                values.taints['deps'].extend(arg.taints['deps'])
+                values.taints['concrete'] = values.taints['concrete'] and arg.taints['concrete']
+                values.taints['it'] = values.taints['it'] or arg.taints['it']
+            if vexpression.op.startswith('Iop_Add') or vexpression.op.startswith('Iop_And') or \
+               vexpression.op.startswith('Iop_Or') or vexpression.op.startswith('Iop_Xor'):
+                t1 = args[0].taints['pointer']
+                t2 = args[1].taints['pointer']
+                values.taints['pointer'] = (t1 if t1 else t2) if (bool(t1) ^ bool(t2)) else False
+            elif vexpression.op.startswith('Iop_Sub'):
+                t1 = args[0].taints['pointer']
+                t2 = args[1].taints['pointer']
+                values.taints['pointer'] = t1 if t1 and not t2 else False
+            return values
+    elif vexpression.tag == 'Iex_CCall':
+        values = BiHead.default(ty)
+        for i, expr in enumerate(vexpression.args):
+            arg = handle_expression(blockstate, expr, path + ['args', i])
+            values.taints['it'] = values.taints['it'] or arg.taints['it']
+        return values
+    elif vexpression.tag == 'Iex_GetI':
+        return BiHead.default(ty)
+    else:
+        raise FidgetUnsupportedError('Unknown expression tag ({:#x}): {!r}'.format(addr, vexpression.tag))
 
-    def copy_to_self(self, other):
-        self.cleanval = other.cleanval
-        self.dirtyval = other.dirtyval
-        self.deps = other.deps
-        self.args = other.args
-        self.addr = other.addr
-        self.taints = defaultdict(bool, other.taints)
-        self.path = other.path
 
-    @staticmethod
-    def shield_constants(expr_list, whitelist=None):
-        for i, expr in enumerate(expr_list):
-            if whitelist is not None and i not in whitelist: continue
-            if expr.taints['concrete_root']:
-                expr_list[i] = ConstExpression(expr.cleanval, expr.type, expr.taints['concrete'])
-
-    def make_bindata(self, flags):
-        # this is the top level call. It returns a BinaryDataConglomerate.
-        # flags is the access type
-        data = BinaryDataConglomerate(self.addr, self.cleanval.model.signed, self.dirtyval, flags)
-        for resolver in self.deps:
-            dirtyval, bindata = resolver.resolve()
-            data.add(bindata, dirtyval)
-        return data
-
-    def overwrite(self, other):
-        if self.size > other.size:
-            l.warning("Overwriting a SmartExpression with a larger SmartExpression. Are you SURE you know what you're doing?")
-            return self
-        if self.size == other.size:
-            return self
-        smaller = self
-        larger = other
-        out = CustomExpression()
-        out.deps = smaller.deps + larger.deps
-        out.args = []
-        out.size = larger.size
-        out.type = larger.type
-        out.blockstate = smaller.blockstate
-        out.addr = smaller.addr # ??? what will be done with this
-        out.path = smaller.path
-        out.project = out.blockstate.project
-        out.taints = defaultdict(bool)
-        out.taints['pointer'] = larger.taints['pointer']  # sketchy...
-        out.taints['concrete'] = larger.taints['concrete'] and smaller.taints['concrete']
-        out.cleanval = claripy.Concat(larger.cleanval[larger.size-1:smaller.size], smaller.cleanval)
-        out.dirtyval = claripy.Concat(larger.dirtyval[larger.size-1:smaller.size], smaller.dirtyval)
-        return out
-
-    def truncate(self, ty):
-        if ty == self.type:
-            return self
-        if 'F' in self.type:
-            raise ValueError("Cannot coerce floating point values")
-        size_bits = vexutils.extract_int(ty)
-        if size_bits > self.size:
-            l.error("Attempting to truncate SmartExpression of size %d to size %d", self.size, size_bits)
-            return self
-        out = CustomExpression()
-        out.deps = self.deps
-        out.args = []
-        out.size = size_bits
-        out.type = ty
-        out.blockstate = self.blockstate
-        out.addr = self.addr # ??? what will be done with this
-        out.path = self.path
-        out.project = out.blockstate.project
-        out.taints = defaultdict(bool, concrete=self.taints['concrete'])
-        out.cleanval = self.cleanval[size_bits-1:0]
-        out.dirtyval = self.dirtyval[size_bits-1:0]
-        return out
-
-    def __str__(self):
-        return 'Expression at 0x%x stmt %d' % (self.addr, self.path[1])
-
-class CustomExpression(SmartExpression):
-    def __init__(self): # pylint: disable=super-init-not-called
-        pass
-
-class ConstExpression(object):
-    def __init__(self, val, ty, concrete):
-        self.size = val.size()
-        self.type = ty
-        self.cleanval = val
-        self.dirtyval = val
-        self.deps = []
-        self.args = []
-        self.taints = defaultdict(bool, concrete=concrete)
-        self.addr = None
-        self.path = []
-
-    @staticmethod
-    def make_bindata_internal():
-        return []
-
-    def truncate(self, ty):
-        if ty == self.type:
-            return self
-        if 'F' in self.type:
-            raise ValueError("Cannot coerce floating point values")
-        size_bits = vexutils.extract_int(ty)
-        if size_bits > self.size:
-            l.error("Attempting to truncate SmartExpression of size %d to size %d", self.size, size_bits)
-            return self
-        return ConstExpression(self.cleanval[size_bits-1:0], ty, self.taints['concrete'])
-
-    @staticmethod
-    def default(ty):
-        return ConstExpression(vexutils.make_default_value(ty), ty, False)
+def make_bindata(values, addr, flags):
+    # flags is the access type
+    data = BinaryDataConglomerate(addr, values.as_signed, values.dirtyval, flags)
+    for resolver in values.taints['deps']:
+        dirtyval, bindata = resolver.resolve()
+        data.add(bindata, dirtyval)
+    return data
