@@ -222,7 +222,6 @@ class StructureAnalysis(object):
                         if stmt.offset == self.project.arch.sp_offset:
                             if not expression.taints['concrete']:
                                 l.warning("This function appears to use alloca(). Abort.")
-                                import ipdb; ipdb.set_trace()
                                 raise FidgetAnalysisFailure
                             blockstate.alloc(expression)
 
@@ -282,7 +281,7 @@ class StructureAnalysis(object):
                 blockstate.state.regs.sp = popped
                 blockstate.tags = blockstate.tags[:-2]
 
-            blockstate.end()
+            blockstate.end(clean=block.jumpkind == 'Ijk_Call')
 
             if block.jumpkind == 'Ijk_Call' or block.jumpkind in OK_CONTINUE_JUMPS:
 
@@ -362,6 +361,7 @@ class BlockState:
 
         self.tempstore = None
         self.tags = []
+        self.write_targets = []
 
         if self.state is None:
             self.state = SimState(arch=project.arch,
@@ -417,6 +417,7 @@ class BlockState:
             return      # don't store anything to memory that's not an accounted-for region
         addr_vs = self.state.se.VS(bits=self.state.arch.bits, region=addr.taints['pointer'], val=addr.as_unsigned)
         self.state.memory.store(addr_vs, val, endness=self.state.arch.memory_endness)
+        self.write_targets.append((addr_vs, val.length))
 
     def access(self, addr_expression, access_type):
         if addr_expression.taints['pointer'] != self.taint_region:
@@ -426,33 +427,33 @@ class BlockState:
     def alloc(self, addr_expression):
         self.tags.append(('ALLOC', make_bindata(addr_expression, self.addr, 0)))
 
-    def end(self):
+    def end(self, clean=False):
         for offset, name in self.project.arch.register_names.iteritems():
             if offset in (self.project.arch.sp_offset, self.project.arch.bp_offset, self.project.arch.ip_offset):
                 continue
             if offset == 36 and self.project.arch.name.startswith('ARM') and self.addr & 1 == 1:
                 continue
+            # values remaining in registers at end-of-block are pointers! Probably.
             value = getattr(self.state.regs, name)
+            if value.taints['already_pointered']:
+                continue
+            self.access(value, AccessType.POINTER)
+            value.taints['already_pointered'] = True
             if value.taints['concrete'] and not value.taints['pointer']:
+                # Don't let nonpointer values persist between block states
                 value = BiHead(value.cleanval, value.cleanval)
-                self.state.registers.store(offset, value)
-            else:
-                self.access(value, AccessType.POINTER)
+            self.state.registers.store(offset, value)
 
-        # TODO: This is really inefficient!!!
-        for region in self.state.memory.regions.itervalues():
-            done = set()
-            for addr in sorted(region._memory.mem.keys()):
-                if addr in done:
-                    continue
-                value = region._memory.load(addr, self.state.arch.bytes, endness=self.state.arch.memory_endness)
-                if value.taints['pointer']:
-                    for i in range(addr, addr + self.state.arch.bytes):
-                        done.add(i)
-                else:
-                    replacement = region._memory.load(addr, 1).cleanval
-                    replacement = BiHead(replacement, replacement)
-                    region._memory.store(addr, replacement)
+        # If a call, scrub the return-value register
+        if clean:
+            self.state.registers.store(self.state.arch.ret_offset, BiHead(claripy.BVV(0, self.state.arch.bits), claripy.BVV(0, self.state.arch.bits)))
+
+        # Don't let nonpointer vales persist between block state... in memory!
+        for addr, size in self.write_targets:
+            value = self.state.memory.load(addr, size, endness=self.state.arch.memory_endness)
+            if not value.taints['pointer']:
+                replacement = BiHead(value.cleanval, value.cleanval)
+                self.state.memory.store(addr, replacement, endness=self.state.arch.memory_endness)
 
 bd_cache = {}
 
