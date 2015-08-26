@@ -415,7 +415,7 @@ class BlockState:
             return      # don't store anything to memory that's not an accounted-for region
         addr_vs = self.state.se.VS(bits=self.state.arch.bits, region=addr.taints['pointer'], val=addr.as_unsigned)
         self.state.memory.store(addr_vs, val, endness=self.state.arch.memory_endness)
-        self.write_targets.append((addr_vs, val.length))
+        self.write_targets.append((addr_vs, val.length/8))
 
     def access(self, addr_expression, access_type):
         if addr_expression.taints['pointer'] != self.taint_region:
