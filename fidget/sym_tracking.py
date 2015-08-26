@@ -71,7 +71,7 @@ class StructureAnalysis(object):
         if self.cfg is None:
             self.cfg = project.analyses.CFG(enable_symbolic_back_traversal=True)
         if self.functions_list is None:
-            self.functions_list = self.get_real_functions(self.cfg)
+            self.functions_list = self.real_functions(self.cfg)
 
         for func in self.functions_list:
             try:
@@ -89,9 +89,8 @@ class StructureAnalysis(object):
         self.structures[struct.name] = struct
 
     @staticmethod
-    def get_real_functions(cfg):
+    def real_functions(cfg):
         project = cfg._project
-        out = []
 
         # Find the real _start on MIPS so we don't touch it
         do_not_touch = None
@@ -146,9 +145,7 @@ class StructureAnalysis(object):
                 l.debug('Skipping function %s starting with a SimProcedure', func.name)
 
             # This function is APPROVED
-            out.append(func)
-
-        return out
+            yield func
 
     def analyze_stack(self, funcaddr):
         struct = Struct(self.project.arch, is_stack_frame=True)
@@ -165,13 +162,14 @@ class StructureAnalysis(object):
             blockstate = queue.pop(0)
             if blockstate.addr in headcache:
                 continue
-            l.debug("Analyzing block %#x", blockstate.addr)
 
             try:
                 block = blockstate.lift(opt_level=1, max_size=400)
             except AngrMemoryError:
+                l.error("Couldn't lift block at %#x", blockstate.addr)
                 continue
 
+            l.debug("Analyzing block %#x", blockstate.addr)
             mark_addrs = [
                             s.addr + s.delta
                             for s in block.statements

@@ -77,9 +77,8 @@ class Fidget(object):
         last_size = 0
         successes = 0
         totals = 0
-        funclist = StructureAnalysis.get_real_functions(self.cfg)
 
-        for func in funclist:
+        for func in StructureAnalysis.real_functions(self.cfg):
             # Check if the function is white/blacklisted
             if (len(whitelist) > 0 and func.name not in whitelist) or \
                (len(blacklist) > 0 and func.name in blacklist):
@@ -214,9 +213,6 @@ class Fidget(object):
             else:
                 l.debug('Moved %#x (size %#x) to %#x', var.conc_addr, var.size, fixedval)
 
-        self._stack_patch_data += stack.alloc_op.get_patch_data(solver)
-        for dealloc in stack.dealloc_ops:
-            self._stack_patch_data += dealloc.get_patch_data(solver)
         self._stack_patch_data += stack.get_patches(solver)
         return True
 

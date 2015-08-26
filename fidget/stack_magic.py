@@ -149,7 +149,10 @@ class Struct(object):
         return len(self.variables)
 
     def get_patches(self, solver):
-        return sum((var.get_patches(solver) for var in self), [])
+        out = sum((var.get_patches(solver) for var in self), [])
+        out += self.alloc_op.get_patch_data(solver)
+        out += sum((dealloc.get_patch_data(solver) for dealloc in self.dealloc_ops), [])
+        return out
 
     def sym_link(self, solver, safe=False):
         solver.add(self.sym_size >= self.conc_size)
