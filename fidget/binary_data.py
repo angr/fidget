@@ -752,7 +752,7 @@ class BinaryData(object):
     def __repr__(self):
         return '<BinaryData for %#0.8x: %d>' % (self.addr, self.value)
 
-class BinaryDataConglomerate:
+class BinaryDataConglomerate(object):
     def __init__(self, addr, value, symval, access_flags):
         if not isinstance(value, (int, long)):
             raise ValueError("value must be an int or long!")
@@ -780,3 +780,49 @@ class BinaryDataConglomerate:
 
     def __str__(self):
         return 'BinaryData(%x)' % self.value
+
+bd_cache = {}
+
+class PendingBinaryData(object):
+    __slots__ = ('project', 'addr', 'value', 'sym_value', 'path', '_hash')
+    def __init__(self, project, addr, values, path):
+        self.project = project
+        self.addr = addr
+        self.value = values.as_unsigned
+        self.sym_value = values.dirtyval
+        self.path = tuple(path)
+        self._hash = None
+
+    def __hash__(self):
+        if not self._hash: self._hash = hash(('pbd', self.project.filename, self.addr, self.value, self.path))
+        return self._hash
+
+    def __eq__(self, other):
+        return self.project.filename == other.project.filename and self.addr == other.addr and self.value == other.value and self.path == other.path
+
+    def resolve(self):
+        if self in bd_cache:
+            return bd_cache[self]
+        else:
+            try:
+                binary_data = BinaryData(
+                        self.project,
+                        self.addr,
+                        self.value,
+                        path=list(self.path) + ['con', 'value']
+                    )
+            except ValueNotFoundError as e:
+                l.debug(e.message)
+                binary_data = self.value
+            out = (self.sym_value, binary_data)
+            bd_cache[self] = out
+            return out
+
+    @staticmethod
+    def make_bindata(values, addr, flags):
+        # flags is the access type
+        data = BinaryDataConglomerate(addr, values.as_signed, values.dirtyval, flags)
+        for resolver in values.taints['deps']:
+            dirtyval, bindata = resolver.resolve()
+            data.add(bindata, dirtyval)
+        return data

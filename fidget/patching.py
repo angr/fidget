@@ -1,10 +1,10 @@
-import os, shutil, pickle
 from angr import Project
 import claripy
 
-from .sym_tracking import StructureAnalysis
+from .structures import StructureAnalysis
 from .errors import FidgetError
 
+import os, shutil, pickle
 import logging
 l = logging.getLogger('fidget.patching')
 

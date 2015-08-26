@@ -1,20 +1,13 @@
-from angr import AngrMemoryError
-import pyvex
 import claripy
-
-from .binary_data import BinaryData, BinaryDataConglomerate
-from .stack_magic import Struct
-from .errors import FidgetError, FidgetUnsupportedError, ValueNotFoundError, FidgetAnalysisFailure
-from .bihead import BiHead
-from . import vexutils
 from simuvex import operations, SimOperationError, SimState, s_options as sim_options
 
-from collections import defaultdict
+from .binary_data import PendingBinaryData
+from .errors import FidgetUnsupportedError, FidgetAnalysisFailure
+from . import vexutils
+from .bihead import BiHead
 
 import logging
-l = logging.getLogger('fidget.sym_tracking')
-
-OK_CONTINUE_JUMPS = ('Ijk_FakeRet', 'Ijk_Boring', 'Ijk_FakeRet', 'Ijk_Sys_int128', 'Ijk_SigTRAP', 'Ijk_Sys_syscall')
+l = logging.getLogger('fidget.blockstate')
 
 ROUNDING_IROPS = ('Iop_AddF64', 'Iop_SubF64', 'Iop_MulF64', 'Iop_DivF64',
                   'Iop_AddF32', 'Iop_SubF32', 'Iop_MulF32', 'Iop_DivF32',
@@ -53,189 +46,11 @@ ROUNDING_IROPS = ('Iop_AddF64', 'Iop_SubF64', 'Iop_MulF64', 'Iop_DivF64',
                   'Iop_Add64Fx4', 'Iop_Sub64Fx4', 'Iop_Mul64Fx4', 'Iop_Div64Fx4',
                   'Iop_Add32Fx8', 'Iop_Sub32Fx8', 'Iop_Mul32Fx8', 'Iop_Div32Fx8'
                  )
-
-class StructureAnalysis(object):
-    def __init__(self,
-                 project,
-                 cfg=None,
-                 functions_list=None,
-                 chase_structs=False):
-        self.project = project
-        self.cfg = cfg
-        self.functions_list = functions_list
-        self.chase_structs = chase_structs
-
-        self.structures = {}
-        self.stack_frames = defaultdict(lambda: None)
-
-        if self.cfg is None:
-            self.cfg = project.analyses.CFG(enable_symbolic_back_traversal=True)
-        if self.functions_list is None:
-            self.functions_list = self.real_functions(self.cfg)
-
-        for func in self.functions_list:
-            try:
-                struct = self.analyze_stack(func._addr)
-            except FidgetAnalysisFailure:
-                pass
-            else:
-                self.add_struct(struct)
-                self.stack_frames[func._addr] = struct.name
-
-        if chase_structs:
-            raise FidgetUnsupportedError("lmao what")
-
-    def add_struct(self, struct):
-        self.structures[struct.name] = struct
-
-    @staticmethod
-    def real_functions(cfg):
-        project = cfg._project
-
-        # Find the real _start on MIPS so we don't touch it
-        do_not_touch = None
-        if project.arch.name == 'MIPS32':
-            for context in cfg.get_all_nodes(project.entry):
-                for succ, jumpkind in cfg.get_successors_and_jumpkind(context):
-                    if jumpkind == 'Ijk_Call':
-                        do_not_touch = succ.addr
-                        l.debug('Found MIPS entry point stub target %#x', do_not_touch)
-
-        for funcaddr, func in cfg.function_manager.functions.iteritems():
-            # But don't touch _start. Seriously.
-            if funcaddr == project.entry:
-                l.debug('Skipping entry point')
-                continue
-
-            # On MIPS there's another function that's part of the entry point.
-            # Trying to mess with it will cause catastrope.
-            if funcaddr == do_not_touch:
-                l.debug('Skipping MIPS entry point stub target')
-                continue
-
-            # Don't try to patch simprocedures
-            if project.is_hooked(funcaddr):
-                l.debug("Skipping simprocedure %s", project._sim_procedures[funcaddr][0].__name__)
-                continue
-
-            # Don't touch functions not in any segment
-            if project.loader.main_bin.find_segment_containing(funcaddr) is None:
-                l.debug('Skipping function %s not mapped', func.name)
-                continue
-
-            # If the text section exists, only patch functions in it
-            if '.text' not in project.loader.main_bin.sections_map:
-                sec = project.loader.main_bin.find_section_containing(funcaddr)
-                if sec is None or sec.name != '.text':
-                    l.debug('Skipping function %s not in .text', func.name)
-                    continue
-
-            # Don't patch functions in the PLT
-            if funcaddr in project.loader.main_bin.plt.values():
-                l.debug('Skipping function %s in PLT', func.name)
-                continue
-
-            # If the CFG couldn't parse an indirect jump, avoid
-            if func.has_unresolved_jumps:
-                l.debug("Skipping function %s with unresolved jumps", func.name)
-                continue
-
-            # Check if the function starts at a SimProcedure (edge case)
-            if cfg.get_any_node(funcaddr).simprocedure_name is not None:
-                l.debug('Skipping function %s starting with a SimProcedure', func.name)
-
-            # This function is APPROVED
-            yield func
-
-    def analyze_stack(self, funcaddr):
-        struct = Struct(self.project.arch, is_stack_frame=True)
-        initial_state = BlockState(self.project, funcaddr, taint_region=struct.name)
-        sp = initial_state.state.regs.sp
-        sp.taints['pointer'] = struct.name
-        sp.taints['concrete'] = True
-        initial_state.state.regs.sp = sp
-
-        queue = [initial_state]
-        headcache = set()
-        cache = set()
-        while len(queue) > 0:
-            blockstate = queue.pop(0)
-            if blockstate.addr in headcache:
-                continue
-
-            try:
-                block = self.project.factory.block(blockstate.block_addr, opt_level=1, max_size=400).vex
-            except AngrMemoryError:
-                l.error("Couldn't lift block at %#x", blockstate.addr)
-                continue
-
-            l.debug("Analyzing block %#x", blockstate.addr)
-            mark_addrs = [
-                            s.addr + s.delta
-                            for s in block.statements
-                            if isinstance(s, pyvex.IRStmt.IMark)
-                         ]
-            if block.jumpkind == 'Ijk_NoDecode':
-                l.error("Block at %#x ends in NoDecode", blockstate.addr)
-                mark_addrs.pop()
-
-            headcache.add(blockstate.addr)
-            for addr in mark_addrs:
-                if addr != funcaddr and addr in self.cfg.function_manager.functions:
-                    l.warning("\tThis function jumps into another function (%#x). Abort.", addr)
-                    raise FidgetAnalysisFailure
-                cache.add(addr)
-                insnblock = self.project.factory.block(addr, num_inst=1, max_size=400, opt_level=1).vex
-                blockstate.handle_irsb(insnblock)
-
-            if block.jumpkind == 'Ijk_Call' and self.project.arch.call_pushes_ret:
-                # Pop the return address off the stack and keep going
-                stack = blockstate.state.regs.sp
-                popped = stack - self.project.arch.stack_change
-                popped.taints = stack.taints
-                blockstate.state.regs.sp = popped
-                # Discard the last two tags -- they'll be an alloc and an access for the call
-                # (the push and the retaddr)
-                blockstate.tags = blockstate.tags[:-2]
-                # Do NOT discard the regs, as they constrain the amount that was added to sizeof(void*)
-
-            blockstate.end(clean=block.jumpkind == 'Ijk_Call')
-
-            if block.jumpkind == 'Ijk_Call' or block.jumpkind in OK_CONTINUE_JUMPS:
-
-                for context in self.cfg.get_all_nodes(blockstate.block_addr):
-                    for node, jumpkind in self.cfg.get_successors_and_jumpkind( \
-                                            context, \
-                                            excluding_fakeret=False):
-                        if jumpkind not in OK_CONTINUE_JUMPS:
-                            continue
-                        elif node.addr in headcache:
-                            continue
-                        elif node.simprocedure_name is not None:
-                            continue
-                        elif node.addr in cache:
-                            for succ, jumpkind in self.cfg.get_successors_and_jumpkind(node, excluding_fakeret=False):
-                                if jumpkind in OK_CONTINUE_JUMPS and succ.addr not in cache and succ.simprocedure_name is None:
-                                    queue.append(blockstate.copy(succ.addr))
-                        else:
-                            queue.append(blockstate.copy(node.addr))
-
-            elif block.jumpkind in ('Ijk_Ret', 'Ijk_NoDecode'):
-                pass
-            else:
-                raise FidgetError("(%#x) Can't proceed from unknown jumpkind %s" % (blockstate.addr, block.jumpkind))
-
-            for tag, bindata in blockstate.tags:
-                if tag == 'ALLOC':
-                    l.debug("Got tag: %#0.8x  ALLOC %#x", bindata.addr, bindata.value)
-                    struct.alloc(bindata)
-                elif tag == 'ACCESS':
-                    l.debug("Got tag: %#0.8x ACCESS %s %#x", bindata.addr, AccessType.mapping[bindata.access_flags], bindata.value)
-                    struct.access(bindata)
-                else:
-                    raise FidgetUnsupportedError('You forgot to update the tag list, jerkface!')
-
-        return struct
+ACCESS_READ = 1
+ACCESS_WRITE = 2
+ACCESS_POINTER = 4
+ACCESS_UNINITREAD = 8
+ACCESS_MAPPING = {0: '<none>', 1: 'READ', 2: 'WRITE', 4: 'POINTER', 8: 'UNINITREAD'}
 
 class TempStore(object):
     def __init__(self, tyenv):
@@ -262,14 +77,7 @@ class TempStore(object):
         val = BiHead.default(self.tyenv.types[tmp])
         self.write(tmp, val)
 
-class AccessType:       # pylint: disable=no-init
-    READ = 1
-    WRITE = 2
-    POINTER = 4
-    UNINITREAD = 8
-    mapping = {0: '<none>', 1: 'READ', 2: 'WRITE', 4: 'POINTER', 8: 'UNINITREAD'}
-
-class BlockState:
+class BlockState(object):
     def __init__(self, project, addr, state=None, taint_region=None):
         self.project = project
         self.addr = addr
@@ -335,10 +143,10 @@ class BlockState:
     def access(self, addr_expression, access_type):
         if addr_expression.taints['pointer'] != self.taint_region:
             return
-        self.tags.append(('ACCESS', make_bindata(addr_expression, self.addr, access_type)))
+        self.tags.append(('ACCESS', PendingBinaryData.make_bindata(addr_expression, self.addr, access_type)))
 
     def alloc(self, addr_expression):
-        self.tags.append(('ALLOC', make_bindata(addr_expression, self.addr, 0)))
+        self.tags.append(('ALLOC', PendingBinaryData.make_bindata(addr_expression, self.addr, 0)))
 
     def handle_irsb(self, block):
         self.tempstore = TempStore(block.tyenv)
@@ -366,8 +174,8 @@ class BlockState:
             expression = self.handle_expression(stmt.data, path + ['data'])
             address = self.handle_expression(stmt.addr, path + ['addr'])
             self.put_mem(address, expression)
-            self.access(address, AccessType.WRITE)
-            self.access(expression, AccessType.POINTER)
+            self.access(address, ACCESS_WRITE)
+            self.access(expression, ACCESS_POINTER)
 
         elif stmt.tag == 'Ist_Put':
             expression = self.handle_expression(stmt.data, path + ['data'])
@@ -381,7 +189,7 @@ class BlockState:
         elif stmt.tag == 'Ist_LoadG':
             # Conditional loads. Lots of bullshit.
             addr_expression = self.handle_expression(stmt.addr, path + ['addr'])
-            self.access(addr_expression, AccessType.READ)
+            self.access(addr_expression, ACCESS_READ)
 
             # load the actual data
             data_expression = self.get_mem(addr_expression, stmt.cvt_types[0])
@@ -407,8 +215,8 @@ class BlockState:
             value_expr = self.handle_expression(stmt.data, path + ['data'])
             self.handle_expression(stmt.guard, path + ['guard'])
             self.put_mem(addr_expr, value_expr)
-            self.access(addr_expr, AccessType.WRITE)
-            self.access(value_expr, AccessType.POINTER)
+            self.access(addr_expr, ACCESS_WRITE)
+            self.access(value_expr, ACCESS_POINTER)
 
         elif stmt.tag == 'Ist_PutI':    # haha no
             self.handle_expression(stmt.data, path + ['data'])
@@ -433,7 +241,7 @@ class BlockState:
             return self.get_tmp(expr.tmp)
         elif expr.tag == 'Iex_Load':
             addr_expression = self.handle_expression(expr.addr, path + ['addr'])
-            self.access(addr_expression, AccessType.READ)
+            self.access(addr_expression, ACCESS_READ)
             return self.get_mem(addr_expression, ty)
         elif expr.tag == 'Iex_Const' or expr.tag.startswith('Ico_'):
             if expr.tag == 'Iex_Const':
@@ -528,7 +336,7 @@ class BlockState:
             value = getattr(self.state.regs, name)
             if value.taints['already_pointered']:
                 continue
-            self.access(value, AccessType.POINTER)
+            self.access(value, ACCESS_POINTER)
             value.taints['already_pointered'] = True
             if value.taints['concrete'] and not value.taints['pointer']:
                 # Don't let nonpointer values persist between block states
@@ -546,50 +354,3 @@ class BlockState:
                 replacement = BiHead(value.cleanval, value.cleanval)
                 self.state.scratch.ins_addr += 1
                 self.state.memory.store(addr, replacement, endness=self.state.arch.memory_endness)
-
-bd_cache = {}
-
-class PendingBinaryData(object):
-    __slots__ = ('project', 'addr', 'value', 'sym_value', 'path', '_hash')
-    def __init__(self, project, addr, values, path):
-        self.project = project
-        self.addr = addr
-        self.value = values.as_unsigned
-        self.sym_value = values.dirtyval
-        self.path = tuple(path)
-        self._hash = None
-
-    def __hash__(self):
-        if not self._hash: self._hash = hash(('pbd', self.project.filename, self.addr, self.value, self.path))
-        return self._hash
-
-    def __eq__(self, other):
-        return self.project.filename == other.project.filename and self.addr == other.addr and self.value == other.value and self.path == other.path
-
-    def resolve(self):
-        if self in bd_cache:
-            return bd_cache[self]
-        else:
-            try:
-                binary_data = BinaryData(
-                        self.project,
-                        self.addr,
-                        self.value,
-                        path=list(self.path) + ['con', 'value']
-                    )
-            except ValueNotFoundError as e:
-                l.debug(e.message)
-                binary_data = self.value
-            out = (self.sym_value, binary_data)
-            bd_cache[self] = out
-            return out
-
-
-
-def make_bindata(values, addr, flags):
-    # flags is the access type
-    data = BinaryDataConglomerate(addr, values.as_signed, values.dirtyval, flags)
-    for resolver in values.taints['deps']:
-        dirtyval, bindata = resolver.resolve()
-        data.add(bindata, dirtyval)
-    return data
