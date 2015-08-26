@@ -367,6 +367,7 @@ class BlockState:
                     special_memory_filler=lambda name, bits: BiHead(claripy.BVV(0, bits), claripy.BVV(0, bits)),
                     add_options={sim_options.ABSTRACT_MEMORY, sim_options.SPECIAL_MEMORY_FILL}
                 )
+            self.state.scratch.ins_addr = 0
             if project.arch.name.startswith('ARM'):
                 it = self.state.regs.itstate
                 it.taints['it'] = True
@@ -414,6 +415,7 @@ class BlockState:
         if not addr.taints['pointer']:
             return      # don't store anything to memory that's not an accounted-for region
         addr_vs = self.state.se.VS(bits=self.state.arch.bits, region=addr.taints['pointer'], val=addr.as_unsigned)
+        self.state.scratch.ins_addr += 1
         self.state.memory.store(addr_vs, val, endness=self.state.arch.memory_endness)
         self.write_targets.append((addr_vs, val.length/8))
 
@@ -451,6 +453,7 @@ class BlockState:
             value = self.state.memory.load(addr, size, endness=self.state.arch.memory_endness)
             if not value.taints['pointer']:
                 replacement = BiHead(value.cleanval, value.cleanval)
+                self.state.scratch.ins_addr += 1
                 self.state.memory.store(addr, replacement, endness=self.state.arch.memory_endness)
 
 bd_cache = {}
