@@ -164,7 +164,7 @@ class StructureAnalysis(object):
                 continue
 
             try:
-                block = blockstate.lift(opt_level=1, max_size=400)
+                block = self.project.factory.block(blockstate.block_addr, opt_level=1, max_size=400).vex
             except AngrMemoryError:
                 l.error("Couldn't lift block at %#x", blockstate.addr)
                 continue
@@ -178,106 +178,26 @@ class StructureAnalysis(object):
             if block.jumpkind == 'Ijk_NoDecode':
                 l.error("Block at %#x ends in NoDecode", blockstate.addr)
                 mark_addrs.pop()
-            headcache.add(blockstate.addr)
 
+            headcache.add(blockstate.addr)
             for addr in mark_addrs:
                 if addr != funcaddr and addr in self.cfg.function_manager.functions:
                     l.warning("\tThis function jumps into another function (%#x). Abort.", addr)
                     raise FidgetAnalysisFailure
                 cache.add(addr)
-
-                insnblock = blockstate.lift(addr, num_inst=1, max_size=400, opt_level=1)
-                temps = TempStore(insnblock.tyenv)
-                blockstate.load_tempstore(temps)
-                blockstate.addr = addr
-                stmtgen = enumerate(insnblock.statements)
-                for _, stmt in stmtgen:
-                    if isinstance(stmt, pyvex.IRStmt.IMark): break
-
-                for stmt_idx, stmt in stmtgen:
-                    path = ['statements', stmt_idx]
-                    if stmt.tag in ('Ist_NoOp', 'Ist_AbiHint', 'Ist_MBE'):
-                        pass
-
-                    elif stmt.tag == 'Ist_Exit':
-                        handle_expression(blockstate, stmt.dst, path + ['dst'])
-                        # Let the cfg take care of control flow!
-
-                    elif stmt.tag == 'Ist_WrTmp':
-                        expression = handle_expression(blockstate, stmt.data, path + ['data'])
-                        blockstate.put_tmp(stmt.tmp, expression)
-
-                    elif stmt.tag == 'Ist_Store':
-                        expression = handle_expression(blockstate, stmt.data, path + ['data'])
-                        address = handle_expression(blockstate, stmt.addr, path + ['addr'])
-                        blockstate.put_mem(address, expression)
-                        blockstate.access(address, AccessType.WRITE)
-                        blockstate.access(expression, AccessType.POINTER)
-
-                    elif stmt.tag == 'Ist_Put':
-                        expression = handle_expression(blockstate, stmt.data, path + ['data'])
-                        blockstate.put_reg(stmt.offset, expression)
-                        if stmt.offset == self.project.arch.sp_offset:
-                            if not expression.taints['concrete']:
-                                l.warning("This function appears to use alloca(). Abort.")
-                                raise FidgetAnalysisFailure
-                            blockstate.alloc(expression)
-
-                    elif stmt.tag == 'Ist_LoadG':
-                        # Conditional loads. Lots of bullshit.
-                        addr_expression = handle_expression(blockstate, stmt.addr, path + ['addr'])
-                        blockstate.access(addr_expression, AccessType.READ)
-
-                        # load the actual data
-                        data_expression = blockstate.get_mem(addr_expression, stmt.cvt_types[0])
-                        # it then needs a type conversion applied to it
-                        conv_diff = vexutils.extract_int(stmt.cvt_types[1]) - vexutils.extract_int(stmt.cvt_types[0])
-                        if conv_diff != 0:
-                            concrete = data_expression.taints['concrete']
-                            deps = data_expression.taints['deps']
-                            if 'S' in stmt.cvt:
-                                data_expression = data_expression.sign_extend(conv_diff)
-                            else:
-                                data_expression = data_expression.zero_extend(conv_diff)
-                            data_expression.taints['concrete'] = concrete
-                            data_expression.taints['deps'] = deps
-
-                        blockstate.put_tmp(stmt.dst, data_expression)
-                        handle_expression(blockstate, stmt.guard, path + ['guard'])
-                        handle_expression(blockstate, stmt.alt, path + ['alt'])
-
-                    elif stmt.tag == 'Ist_StoreG':
-                        # Conditional store
-                        addr_expr = handle_expression(blockstate, stmt.addr, path + ['addr'])
-                        value_expr = handle_expression(blockstate, stmt.data, path + ['data'])
-                        handle_expression(blockstate, stmt.guard, path + ['guard'])
-                        blockstate.put_mem(addr_expr, value_expr)
-                        blockstate.access(addr_expr, AccessType.WRITE)
-                        blockstate.access(value_expr, AccessType.POINTER)
-
-                    elif stmt.tag == 'Ist_PutI':    # haha no
-                        handle_expression(blockstate, stmt.data, path + ['data'])
-                    elif stmt.tag == 'Ist_CAS':     # HA ha no
-                        if stmt.oldLo != 4294967295:
-                            blockstate.tempstore.default(stmt.oldLo)
-                        if stmt.oldHi != 4294967295:
-                            blockstate.tempstore.default(stmt.oldHi)
-                    elif stmt.tag == 'Ist_Dirty':   # hahAHAHAH NO
-                        if stmt.tmp != 4294967295:
-                            blockstate.tempstore.default(stmt.tmp)
-                    else:
-                        raise FidgetUnsupportedError("Unknown vex instruction???", stmt)
+                insnblock = self.project.factory.block(addr, num_inst=1, max_size=400, opt_level=1).vex
+                blockstate.handle_irsb(insnblock)
 
             if block.jumpkind == 'Ijk_Call' and self.project.arch.call_pushes_ret:
                 # Pop the return address off the stack and keep going
                 stack = blockstate.state.regs.sp
                 popped = stack - self.project.arch.stack_change
+                popped.taints = stack.taints
+                blockstate.state.regs.sp = popped
                 # Discard the last two tags -- they'll be an alloc and an access for the call
                 # (the push and the retaddr)
-                popped.taints = stack.taints
-                # Do NOT discard the regs, as they constrain the amount that was added to sizeof(void*)
-                blockstate.state.regs.sp = popped
                 blockstate.tags = blockstate.tags[:-2]
+                # Do NOT discard the regs, as they constrain the amount that was added to sizeof(void*)
 
             blockstate.end(clean=block.jumpkind == 'Ijk_Call')
 
@@ -376,13 +296,6 @@ class BlockState:
     def copy(self, newaddr):
         return BlockState(self.project, newaddr, state=self.state.copy(), taint_region=self.taint_region)
 
-    def lift(self, addr=None, **options):
-        if addr is None: addr = self.addr
-        return self.project.factory.block(addr, **options).vex
-
-    def load_tempstore(self, tempstore):
-        self.tempstore = tempstore
-
     def get_reg(self, offset, ty):
         if isinstance(ty, (int, long)):
             ty = 'Ity_I%d' % ty
@@ -426,6 +339,184 @@ class BlockState:
 
     def alloc(self, addr_expression):
         self.tags.append(('ALLOC', make_bindata(addr_expression, self.addr, 0)))
+
+    def handle_irsb(self, block):
+        self.tempstore = TempStore(block.tyenv)
+
+        for stmt_idx, stmt in enumerate(block.statements):
+            path = ['statements', stmt_idx]
+            self.handle_statement(stmt, path)
+
+    def handle_statement(self, stmt, path):
+        if stmt.tag in ('Ist_NoOp', 'Ist_AbiHint', 'Ist_MBE'):
+            pass
+
+        elif stmt.tag == 'Ist_IMark':
+            self.addr = stmt.addr + stmt.delta
+
+        elif stmt.tag == 'Ist_Exit':
+            self.handle_expression(stmt.dst, path + ['dst'])
+            # Let the cfg take care of control flow!
+
+        elif stmt.tag == 'Ist_WrTmp':
+            expression = self.handle_expression(stmt.data, path + ['data'])
+            self.put_tmp(stmt.tmp, expression)
+
+        elif stmt.tag == 'Ist_Store':
+            expression = self.handle_expression(stmt.data, path + ['data'])
+            address = self.handle_expression(stmt.addr, path + ['addr'])
+            self.put_mem(address, expression)
+            self.access(address, AccessType.WRITE)
+            self.access(expression, AccessType.POINTER)
+
+        elif stmt.tag == 'Ist_Put':
+            expression = self.handle_expression(stmt.data, path + ['data'])
+            self.put_reg(stmt.offset, expression)
+            if stmt.offset == self.project.arch.sp_offset:
+                if not expression.taints['concrete']:
+                    l.warning("This function appears to use alloca(). Abort.")
+                    raise FidgetAnalysisFailure
+                self.alloc(expression)
+
+        elif stmt.tag == 'Ist_LoadG':
+            # Conditional loads. Lots of bullshit.
+            addr_expression = self.handle_expression(stmt.addr, path + ['addr'])
+            self.access(addr_expression, AccessType.READ)
+
+            # load the actual data
+            data_expression = self.get_mem(addr_expression, stmt.cvt_types[0])
+            # it then needs a type conversion applied to it
+            conv_diff = vexutils.extract_int(stmt.cvt_types[1]) - vexutils.extract_int(stmt.cvt_types[0])
+            if conv_diff != 0:
+                concrete = data_expression.taints['concrete']
+                deps = data_expression.taints['deps']
+                if 'S' in stmt.cvt:
+                    data_expression = data_expression.sign_extend(conv_diff)
+                else:
+                    data_expression = data_expression.zero_extend(conv_diff)
+                data_expression.taints['concrete'] = concrete
+                data_expression.taints['deps'] = deps
+
+            self.put_tmp(stmt.dst, data_expression)
+            self.handle_expression(stmt.guard, path + ['guard'])
+            self.handle_expression(stmt.alt, path + ['alt'])
+
+        elif stmt.tag == 'Ist_StoreG':
+            # Conditional store
+            addr_expr = self.handle_expression(stmt.addr, path + ['addr'])
+            value_expr = self.handle_expression(stmt.data, path + ['data'])
+            self.handle_expression(stmt.guard, path + ['guard'])
+            self.put_mem(addr_expr, value_expr)
+            self.access(addr_expr, AccessType.WRITE)
+            self.access(value_expr, AccessType.POINTER)
+
+        elif stmt.tag == 'Ist_PutI':    # haha no
+            self.handle_expression(stmt.data, path + ['data'])
+        elif stmt.tag == 'Ist_CAS':     # HA ha no
+            if stmt.oldLo != 4294967295:
+                self.tempstore.default(stmt.oldLo)
+            if stmt.oldHi != 4294967295:
+                self.tempstore.default(stmt.oldHi)
+        elif stmt.tag == 'Ist_Dirty':   # hahAHAHAH NO
+            if stmt.tmp != 4294967295:
+                self.tempstore.default(stmt.tmp)
+        else:
+            raise FidgetUnsupportedError("Unknown vex instruction???", stmt)
+
+    def handle_expression(self, expr, path):
+        size = expr.result_size if not expr.tag.startswith('Ico_') else expr.size
+        ty = expr.result_type if not expr.tag.startswith('Ico_') else expr.type
+        addr = self.addr
+        if expr.tag == 'Iex_Get':
+            return self.get_reg(expr.offset, ty)
+        elif expr.tag == 'Iex_RdTmp':
+            return self.get_tmp(expr.tmp)
+        elif expr.tag == 'Iex_Load':
+            addr_expression = self.handle_expression(expr.addr, path + ['addr'])
+            self.access(addr_expression, AccessType.READ)
+            return self.get_mem(addr_expression, ty)
+        elif expr.tag == 'Iex_Const' or expr.tag.startswith('Ico_'):
+            if expr.tag == 'Iex_Const':
+                expr = expr.con
+            if 'F' in ty:
+                if size == 32:
+                    values = BiHead(
+                            claripy.FPV(expr.value, claripy.fp.FSORT_FLOAT),
+                            claripy.FloatingPoint('%x_%d' % (addr, path[1]), claripy.fp.FSORT_FLOAT)
+                        )
+                elif size == 64:
+                    values = BiHead(
+                            claripy.FPV(expr.value, claripy.fp.FSORT_DOUBLE),
+                            claripy.FloatingPoint('%x_%d' % (addr, path[1]), claripy.fp.FSORT_DOUBLE)
+                        )
+                else:
+                    raise FidgetUnsupportedError("Why is there a FP const of size %d" % size)
+            else:
+                values = BiHead(
+                        claripy.BVV(expr.value, size),
+                        claripy.BV('%x_%d' % (addr, path[1]), size)
+                    )
+            values.taints['deps'].append(PendingBinaryData(self.project, self.addr, values, path))
+            values.taints['concrete'] = True
+            values.taints['concrete_root'] = True
+            return values
+        elif expr.tag == 'Iex_ITE':
+            false_expr = self.handle_expression(expr.iffalse, path + ['iffalse'])
+            truth_expr = self.handle_expression(expr.iftrue, path + ['iftrue'])
+            values = truth_expr if truth_expr.taints['pointer'] else false_expr
+            cond_expr = self.handle_expression(expr.cond, path + ['cond'])
+            if not cond_expr.taints['it']:
+                values.taints['concrete'] = false_expr.taints['concrete'] and truth_expr.taints['concrete']
+            values.taints['it'] = false_expr.taints['it'] or truth_expr.taints['it']
+            return values
+        elif expr.tag in ('Iex_Unop','Iex_Binop','Iex_Triop','Iex_Qop'):
+            args = []
+            for i, sub_expr in enumerate(expr.args):
+                arg = self.handle_expression(sub_expr, path + ['args', i])
+                if expr.op.startswith('Iop_Mul') or expr.op.startswith('Iop_And') \
+                        or (i == 0 and expr.op in ROUNDING_IROPS):
+                    if arg.taints['concrete_root']:
+                        arg = BiHead(arg.cleanval, arg.cleanval)
+                        arg.taints['concrete'] = True
+                args.append(arg)
+            try:
+                values = BiHead(
+                        operations[expr.op].calculate(*(x.cleanval for x in args)),
+                        operations[expr.op].calculate(*(x.dirtyval for x in args))
+                    )
+            except SimOperationError:
+                l.exception("SimOperationError while running op '%s', returning null", expr.op)
+                return BiHead.default(ty)
+            except KeyError:
+                l.error("Unsupported operation '%s', returning null", expr.op)
+                return BiHead.default(ty)
+            else:
+                # propogate the taints correctly
+                values.taints['concrete'] = True
+                for arg in args:
+                    values.taints['deps'].extend(arg.taints['deps'])
+                    values.taints['concrete'] = values.taints['concrete'] and arg.taints['concrete']
+                    values.taints['it'] = values.taints['it'] or arg.taints['it']
+                if expr.op.startswith('Iop_Add') or expr.op.startswith('Iop_And') or \
+                   expr.op.startswith('Iop_Or') or expr.op.startswith('Iop_Xor'):
+                    t1 = args[0].taints['pointer']
+                    t2 = args[1].taints['pointer']
+                    values.taints['pointer'] = (t1 if t1 else t2) if (bool(t1) ^ bool(t2)) else False
+                elif expr.op.startswith('Iop_Sub'):
+                    t1 = args[0].taints['pointer']
+                    t2 = args[1].taints['pointer']
+                    values.taints['pointer'] = t1 if t1 and not t2 else False
+                return values
+        elif expr.tag == 'Iex_CCall':
+            values = BiHead.default(ty)
+            for i, expr in enumerate(expr.args):
+                arg = self.handle_expression(expr, path + ['args', i])
+                values.taints['it'] = values.taints['it'] or arg.taints['it']
+            return values
+        elif expr.tag == 'Iex_GetI':
+            return BiHead.default(ty)
+        else:
+            raise FidgetUnsupportedError('Unknown expression tag ({:#x}): {!r}'.format(addr, expr.tag))
 
     def end(self, clean=False):
         for offset, name in self.project.arch.register_names.iteritems():
@@ -493,101 +584,6 @@ class PendingBinaryData(object):
             bd_cache[self] = out
             return out
 
-
-def handle_expression(blockstate, vexpression, path):
-    size = vexpression.result_size if not vexpression.tag.startswith('Ico_') else vexpression.size
-    ty = vexpression.result_type if not vexpression.tag.startswith('Ico_') else vexpression.type
-    addr = blockstate.addr
-    if vexpression.tag == 'Iex_Get':
-        return blockstate.get_reg(vexpression.offset, ty)
-    elif vexpression.tag == 'Iex_RdTmp':
-        return blockstate.get_tmp(vexpression.tmp)
-    elif vexpression.tag == 'Iex_Load':
-        addr_expression = handle_expression(blockstate, vexpression.addr, path + ['addr'])
-        blockstate.access(addr_expression, AccessType.READ)
-        return blockstate.get_mem(addr_expression, ty)
-    elif vexpression.tag == 'Iex_Const' or vexpression.tag.startswith('Ico_'):
-        if vexpression.tag == 'Iex_Const':
-            vexpression = vexpression.con
-        if 'F' in ty:
-            if size == 32:
-                values = BiHead(
-                        claripy.FPV(vexpression.value, claripy.fp.FSORT_FLOAT),
-                        claripy.FloatingPoint('%x_%d' % (addr, path[1]), claripy.fp.FSORT_FLOAT)
-                    )
-            elif size == 64:
-                values = BiHead(
-                        claripy.FPV(vexpression.value, claripy.fp.FSORT_DOUBLE),
-                        claripy.FloatingPoint('%x_%d' % (addr, path[1]), claripy.fp.FSORT_DOUBLE)
-                    )
-            else:
-                raise FidgetUnsupportedError("Why is there a FP const of size %d" % size)
-        else:
-            values = BiHead(
-                    claripy.BVV(vexpression.value, size),
-                    claripy.BV('%x_%d' % (addr, path[1]), size)
-                )
-        values.taints['deps'].append(PendingBinaryData(blockstate.project, blockstate.addr, values, path))
-        values.taints['concrete'] = True
-        values.taints['concrete_root'] = True
-        return values
-    elif vexpression.tag == 'Iex_ITE':
-        false_expr = handle_expression(blockstate, vexpression.iffalse, path + ['iffalse'])
-        truth_expr = handle_expression(blockstate, vexpression.iftrue, path + ['iftrue'])
-        values = truth_expr if truth_expr.taints['pointer'] else false_expr
-        cond_expr = handle_expression(blockstate, vexpression.cond, path + ['cond'])
-        if not cond_expr.taints['it']:
-            values.taints['concrete'] = false_expr.taints['concrete'] and truth_expr.taints['concrete']
-        values.taints['it'] = false_expr.taints['it'] or truth_expr.taints['it']
-        return values
-    elif vexpression.tag in ('Iex_Unop','Iex_Binop','Iex_Triop','Iex_Qop'):
-        args = []
-        for i, expr in enumerate(vexpression.args):
-            arg = handle_expression(blockstate, expr, path + ['args', i])
-            if vexpression.op.startswith('Iop_Mul') or vexpression.op.startswith('Iop_And') \
-                    or (i == 0 and vexpression.op in ROUNDING_IROPS):
-                if arg.taints['concrete_root']:
-                    arg = BiHead(arg.cleanval, arg.cleanval)
-                    arg.taints['concrete'] = True
-            args.append(arg)
-        try:
-            values = BiHead(
-                    operations[vexpression.op].calculate(*(x.cleanval for x in args)),
-                    operations[vexpression.op].calculate(*(x.dirtyval for x in args))
-                )
-        except SimOperationError:
-            l.exception("SimOperationError while running op '%s', returning null", vexpression.op)
-            return BiHead.default(ty)
-        except KeyError:
-            l.error("Unsupported operation '%s', returning null", vexpression.op)
-            return BiHead.default(ty)
-        else:
-            # propogate the taints correctly
-            values.taints['concrete'] = True
-            for arg in args:
-                values.taints['deps'].extend(arg.taints['deps'])
-                values.taints['concrete'] = values.taints['concrete'] and arg.taints['concrete']
-                values.taints['it'] = values.taints['it'] or arg.taints['it']
-            if vexpression.op.startswith('Iop_Add') or vexpression.op.startswith('Iop_And') or \
-               vexpression.op.startswith('Iop_Or') or vexpression.op.startswith('Iop_Xor'):
-                t1 = args[0].taints['pointer']
-                t2 = args[1].taints['pointer']
-                values.taints['pointer'] = (t1 if t1 else t2) if (bool(t1) ^ bool(t2)) else False
-            elif vexpression.op.startswith('Iop_Sub'):
-                t1 = args[0].taints['pointer']
-                t2 = args[1].taints['pointer']
-                values.taints['pointer'] = t1 if t1 and not t2 else False
-            return values
-    elif vexpression.tag == 'Iex_CCall':
-        values = BiHead.default(ty)
-        for i, expr in enumerate(vexpression.args):
-            arg = handle_expression(blockstate, expr, path + ['args', i])
-            values.taints['it'] = values.taints['it'] or arg.taints['it']
-        return values
-    elif vexpression.tag == 'Iex_GetI':
-        return BiHead.default(ty)
-    else:
-        raise FidgetUnsupportedError('Unknown expression tag ({:#x}): {!r}'.format(addr, vexpression.tag))
 
 
 def make_bindata(values, addr, flags):
