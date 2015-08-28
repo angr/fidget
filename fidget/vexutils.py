@@ -1,6 +1,6 @@
 from pyvex import IRSB
 import claripy
-from .errors import FidgetUnsupportedError
+from .errors import FidgetUnsupportedError, ValueNotFoundError
 
 # These are a giant mess of utility functions that are used in multiple spots.
 # A lot are only good to make dealing with comparisons between vex structs tolerable.
@@ -38,6 +38,18 @@ def equals(item1, item2):
             yield (a.jk, b.jk)
             queue.append((a.dst, b.dst))
             queue.append((a.guard, b.guard))
+        elif a.tag == 'Ist_StoreG':
+            yield (a.end, b.end)
+            queue.append((a.addr, b.addr))
+            queue.append((a.data, b.data))
+            queue.append((a.guard, b.guard))
+        elif a.tag == 'Ist_LoadG':
+            yield (a.dst, b.dst)
+            yield (a.cvt, b.cvt)
+            yield (a.end, b.end)
+            queue.append((a.addr, b.addr))
+            queue.append((a.alt, b.alt))
+            queue.append((a.guard, b.guard))
         elif a.tag == 'Iex_Get':
             yield (a.offset, b.offset)
         elif a.tag == 'Iex_RdTmp':
@@ -70,7 +82,10 @@ def equals(item1, item2):
 # Horriby hackish, but I'm not sure how else to do it :/
 
 def get_from_path(obj, path):
-    return _get_from_path(obj, list(path))  # make a copy of the path so it can be mutilated
+    try:
+        return _get_from_path(obj, list(path))  # make a copy of the path so it can be mutilated
+    except (KeyError, AttributeError, IndexError):
+        raise ValueNotFoundError
 
 def _get_from_path(obj, path):
     if len(path) == 0: return obj
@@ -97,13 +112,22 @@ def ExtTo(size, vec, func):
 def extract_int(s):
     return int(''.join(d for d in s if d.isdigit()))
 
-def make_default_value(clrp, ty):
+def make_default_value(ty):
     if 'F' in ty:
         if '32' in ty:
-            return clrp.FPV(0.0, claripy.FSORT_FLOAT)
+            return claripy.FPV(0.0, claripy.fp.FSORT_FLOAT)
         elif '64' in ty:
-            return clrp.FPV(0.0, claripy.FSORT_DOUBLE)
+            return claripy.FPV(0.0, claripy.fp.FSORT_DOUBLE)
         else:
             raise ValueError("Unknown float type %s" % ty)
     else:
-        return clrp.BVV(0, extract_int(ty))
+        return claripy.BVV(0, extract_int(ty))
+
+def search_block(block, value, skip):
+    for i, co in enumerate(block.constants):
+        if co.value == value:
+            if skip == 0:
+                return co, ['constants', i, 'value']
+            else:
+                skip -= 1
+    raise ValueNotFoundError

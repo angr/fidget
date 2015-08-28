@@ -1,3 +1,4 @@
+import claripy
 import bisect
 
 import logging
@@ -20,12 +21,12 @@ class Access(object):
     def sym_addr(self):
         return self.bindata.symval
 
-    def get_patches(self, symrepr):
-        return self.bindata.get_patch_data(symrepr)
+    def get_patches(self, solver):
+        return self.bindata.get_patch_data(solver)
 
-    def sym_link(self, variable, symrepr):
-        self.bindata.apply_constraints(symrepr)
-        symrepr.add(self.sym_addr - self.offset == variable.sym_addr)
+    def sym_link(self, variable, solver):
+        self.bindata.apply_constraints(solver)
+        solver.add(self.sym_addr - self.offset == variable.sym_addr)
 
 class Variable(object):
     def __init__(self, address, sym_addr):
@@ -55,30 +56,30 @@ class Variable(object):
         for access in child.accesses:
             self.add_access(access)
 
-    def sym_link(self, symrepr, stack):
+    def sym_link(self, solver, stack):
         for access in self.accesses:
-            access.sym_link(self, symrepr)
+            access.sym_link(self, solver)
 
         if self.special_bottom:
-            symrepr.add(self.sym_addr == self.conc_addr)
+            solver.add(self.sym_addr == self.conc_addr)
         if self.special_top:
-            symrepr.add(self.sym_addr == (self.conc_addr - stack.conc_size) + stack.sym_size)
+            solver.add(self.sym_addr == (self.conc_addr - stack.conc_size) + stack.sym_size)
         if self.special:
             return
 
         #self.unsafe_constraints.append(self.sym_addr < self.conc_addr)
 
-    def get_patches(self, symrepr):
-        return sum((access.get_patches(symrepr) for access in self.accesses), [])
+    def get_patches(self, solver):
+        return sum((access.get_patches(solver) for access in self.accesses), [])
 
 class Stack():
-    def __init__(self, binrepr, symrepr, stack_size):
+    def __init__(self, binrepr, solver, stack_size):
         self.variables = {} # all the variables, indexed by address
         self.addr_list = [] # all the addresses, kept sorted
         self.binrepr = binrepr
-        self.symrepr = symrepr
+        self.solver = solver
         self.conc_size = stack_size
-        self.sym_size = symrepr._claripy.BV("stack_size", binrepr.angr.arch.bits)
+        self.sym_size = claripy.BV("stack_size", binrepr.angr.arch.bits)
         self.unsafe_constraints = []
 
     def __iter__(self):
@@ -96,7 +97,7 @@ class Stack():
 
         if access.conc_addr not in self.variables:
             name_prefix = 'var' if access.conc_addr < 0 else 'arg'
-            sym_addr = self.symrepr._claripy.BV('%s_%x' % (name_prefix, abs(access.conc_addr)), self.binrepr.angr.arch.bits)
+            sym_addr = claripy.BV('%s_%x' % (name_prefix, abs(access.conc_addr)), self.binrepr.angr.arch.bits)
             self.add_variable(Variable(access.conc_addr, sym_addr))
         self.variables[access.conc_addr].add_access(access)
 
@@ -122,40 +123,40 @@ class Stack():
 
     @property
     def patches(self):
-        return sum((var.get_patches(self.symrepr) for var in self), [])
+        return sum((var.get_patches(self.solver) for var in self), [])
 
     def sym_link(self, safe=False):
-        self.symrepr.add(self.sym_size >= self.conc_size)
-        self.symrepr.add(self.sym_size % (self.binrepr.angr.arch.bytes) == 0)
+        self.solver.add(self.sym_size >= self.conc_size)
+        self.solver.add(self.sym_size % (self.binrepr.angr.arch.bytes) == 0)
         self.unsafe_constraints.append(self.sym_size > self.conc_size)
 
         first = self.variables[self.addr_list[0]]
-        self.symrepr.add(first.sym_addr >= (first.conc_addr + self.conc_size) - self.sym_size)
+        self.solver.add(first.sym_addr >= (first.conc_addr + self.conc_size) - self.sym_size)
         var_list = list(self)
         for var, next_var in zip(var_list, var_list[1:] + [None]):
-            var.sym_link(self.symrepr, self)
+            var.sym_link(self.solver, self)
             self.unsafe_constraints.extend(var.unsafe_constraints)
             if var.conc_addr % (self.binrepr.angr.arch.bytes) == 0:
-                self.symrepr.add(var.sym_addr % (self.binrepr.angr.arch.bytes) == 0)
+                self.solver.add(var.sym_addr % (self.binrepr.angr.arch.bytes) == 0)
 
             if var.special:
                 # We're one of the args that needs to stay fixed relative somewhere
                 pass
             elif next_var is None or next_var.special:
                 # If we're the last free-floating variable, set a solid bottom
-                self.symrepr.add(var.sym_addr <= var.conc_addr)
+                self.solver.add(var.sym_addr <= var.conc_addr)
                 if var.size is not None:
-                    self.symrepr.add(var.sym_addr <= var.sym_addr + var.size)
-                    self.symrepr.add(var.sym_addr + var.size <= next_var.sym_addr)
+                    self.solver.add(var.sym_addr <= var.sym_addr + var.size)
+                    self.solver.add(var.sym_addr + var.size <= next_var.sym_addr)
                     self.unsafe_constraints.append(var.sym_addr + var.size < next_var.sym_addr)
             else:
                 # Otherwise we're one of the free-floating variables
-                self.symrepr.add(var.sym_addr <= var.sym_addr + var.size)
+                self.solver.add(var.sym_addr <= var.sym_addr + var.size)
                 self.unsafe_constraints.append(var.sym_addr + var.size < next_var.sym_addr)
                 if safe:
-                    self.symrepr.add(var.sym_addr + var.size == next_var.sym_addr)
+                    self.solver.add(var.sym_addr + var.size == next_var.sym_addr)
                 else:
-                    self.symrepr.add(var.sym_addr + var.size <= next_var.sym_addr)
+                    self.solver.add(var.sym_addr + var.size <= next_var.sym_addr)
 
     def collapse(self):
         i = 0               # old fashioned loop because we're removing items
