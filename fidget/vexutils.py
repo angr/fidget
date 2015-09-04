@@ -94,21 +94,6 @@ def _get_from_path(obj, path):
         return _get_from_path(obj[key], path)
     return _get_from_path(getattr(obj, key), path)
 
-def ZExtTo(size, vec):
-    if isinstance(vec, (int, long)): return vec
-    if vec.size() == size: return vec
-    return ExtTo(size, vec, vec.zero_extend)
-
-def SExtTo(size, vec):
-    if isinstance(vec, (int, long)): return vec
-    if vec.size() == size: return vec
-    return ExtTo(size, vec, vec.sign_extend)
-
-def ExtTo(size, vec, func):
-    if vec.size() > size:
-        return vec[size-1:0]
-    return vec if vec.size() == size else func(size - vec.size())
-
 def extract_int(s):
     return int(''.join(d for d in s if d.isdigit()))
 

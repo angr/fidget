@@ -91,6 +91,7 @@ class BinaryData(object):
         self.patch_bytes_expression = None
         self.patch_value_expression = None
         self._test_values = ()
+        self._already_patched = False
 
         # this is some weird logic to make some potentially dumb behavior
         # transparent to the user.
@@ -157,6 +158,9 @@ class BinaryData(object):
         '''
         if not (value is None) ^ (solver is None):
             raise ValueError('Must provide a value xor a solver!')
+        if self._already_patched:
+            return []
+
         patch_bytes = self._get_patched_instruction(value=value, solver=solver)
         if value is None:
             value = solver.eval(self.patch_value_expression, 1)[0].signed
@@ -165,6 +169,7 @@ class BinaryData(object):
             return []
         physaddr = self._project.loader.main_bin.addr_to_offset(self.addr)
         if self._armthumb: physaddr -= 1
+        self._already_patched = True
         return [(physaddr, patch_bytes)]
 
     def _error(self):
@@ -307,6 +312,36 @@ class BinaryData(object):
                                     imm8
                                 )
                             self._test_values = (1, 0xff)
+                        elif armins & 0xF000 == 0x6000:
+                            # Register-relative LDR/STR
+                            # page 22
+                            # unsigned 7 bit imm stored w/o last two bits
+                            thoughtval = ((armins >> 6) & 0x1F) << 2
+                            if thoughtval != self.value:
+                                raise ValueNotFoundError
+                            imm5 = self._imm(5)
+                            self.patch_value_expression = imm5.zero_extend(self.bits-5) << 2
+                            self.patch_bytes_expression = claripy.Concat(
+                                    BVV(armins >> 11, 5),
+                                    imm5,
+                                    BVV(armins & 0x3F, 6)
+                                )
+                            self._test_values = (4, 0x7c)
+                        elif armins & 0xF000 == 0x7000:
+                            # Register-relative LDRB/STRB
+                            # page 22
+                            # unsigned 5 bit imm
+                            thoughtval = (armins >> 6) & 0x1F
+                            if thoughtval != self.value:
+                                raise ValueNotFoundError
+                            imm5 = self._imm(5)
+                            self.patch_value_expression = imm5.zero_extend(self.bits-5)
+                            self.patch_bytes_expression = claripy.Concat(
+                                    BVV(armins >> 11, 5),
+                                    imm5,
+                                    BVV(armins & 0x3F, 6)
+                                )
+                            self._test_values = (1, 0x1f)
                         else:
                             raise ValueNotFoundError
 
@@ -717,7 +752,7 @@ class BinaryData(object):
     def __repr__(self):
         return '<BinaryData for %#0.8x: %d>' % (self.addr, self.value)
 
-class BinaryDataConglomerate:
+class BinaryDataConglomerate(object):
     def __init__(self, addr, value, symval, access_flags):
         if not isinstance(value, (int, long)):
             raise ValueError("value must be an int or long!")
@@ -745,3 +780,49 @@ class BinaryDataConglomerate:
 
     def __str__(self):
         return 'BinaryData(%x)' % self.value
+
+bd_cache = {}
+
+class PendingBinaryData(object):
+    __slots__ = ('project', 'addr', 'value', 'sym_value', 'path', '_hash')
+    def __init__(self, project, addr, values, path):
+        self.project = project
+        self.addr = addr
+        self.value = values.as_unsigned
+        self.sym_value = values.dirtyval
+        self.path = tuple(path)
+        self._hash = None
+
+    def __hash__(self):
+        if not self._hash: self._hash = hash(('pbd', self.project.filename, self.addr, self.value, self.path))
+        return self._hash
+
+    def __eq__(self, other):
+        return self.project.filename == other.project.filename and self.addr == other.addr and self.value == other.value and self.path == other.path
+
+    def resolve(self):
+        if self in bd_cache:
+            return bd_cache[self]
+        else:
+            try:
+                binary_data = BinaryData(
+                        self.project,
+                        self.addr,
+                        self.value,
+                        path=list(self.path) + ['con', 'value']
+                    )
+            except ValueNotFoundError as e:
+                l.debug(e.message)
+                binary_data = self.value
+            out = (self.sym_value, binary_data)
+            bd_cache[self] = out
+            return out
+
+    @staticmethod
+    def make_bindata(values, addr, flags):
+        # flags is the access type
+        data = BinaryDataConglomerate(addr, values.as_signed, values.dirtyval, flags)
+        for resolver in values.taints['deps']:
+            dirtyval, bindata = resolver.resolve()
+            data.add(bindata, dirtyval)
+        return data

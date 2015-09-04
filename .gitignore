@@ -4,10 +4,12 @@
 *.i64
 *.id0
 *.id1
+*.id2
 *.til
 *.nam
 *.pyc
 .coldat
 patched_*
-tests
 *.egg-info
+.coverage
+bin
