@@ -262,7 +262,7 @@ class BlockState(object):
             else:
                 values = BiHead(
                         claripy.BVV(expr.value, size),
-                        claripy.BV('%x_%d' % (addr, path[1]), size)
+                        claripy.BVS('%x_%d' % (addr, path[1]), size)
                     )
             values.taints['deps'].append(PendingBinaryData(self.project, self.addr, values, path))
             values.taints['concrete'] = True

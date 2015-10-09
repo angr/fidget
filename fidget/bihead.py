@@ -84,11 +84,11 @@ class BiHead(claripy.Bits):
 
     @property
     def as_unsigned(self):
-        return self.cleanval.model.value
+        return self.cleanval._model_concrete.value
 
     @property
     def as_signed(self):
-        return self.cleanval.model.signed
+        return self.cleanval._model_concrete.signed
 
     def make_uuid(self, uuid=None):   # pylint: disable=unused-argument
         pass
