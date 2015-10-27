@@ -163,7 +163,7 @@ class BinaryData(object):
 
         patch_bytes = self._get_patched_instruction(value=value, solver=solver)
         if value is None:
-            value = solver.eval(self.patch_value_expression, 1)[0].signed
+            value = solver.eval_to_ast(self.patch_value_expression, 1)[0]._model_concrete.signed
         l.debug('Patching address %#x with value %#x', self.addr, value)
         if patch_bytes == self._insbytes:
             return []
