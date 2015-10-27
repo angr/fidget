@@ -121,8 +121,8 @@ class Fidget(object):
             l.error('\tFunction has invalid stack size of %#x', stack.conc_size)
             return False
 
-    # Find the lowest sp-access that isn't an argument to the next function
-    # By starting at accesses to [esp] and stepping up a word at a time
+        # Find the lowest sp-access that isn't an argument to the next function
+        # By starting at accesses to [esp] and stepping up a word at a time
         if self.project.arch.name == 'X86':
             last_addr = -stack.conc_size
             for var in stack:
