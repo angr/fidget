@@ -184,7 +184,7 @@ class Struct(object):
                 # If we're the last free-floating variable, set a solid bottom
                 solver.add(var.sym_addr <= var.conc_addr)
                 if var.size is not None:
-                    solver.add(var.sym_addr <= var.sym_addr + var.size)
+                    solver.add(claripy.SLE(var.sym_addr, var.sym_addr + var.size))
                     solver.add(var.sym_addr + var.size <= next_var.sym_addr)
                     self.unsafe_constraints.append(var.sym_addr + var.size < next_var.sym_addr)
             else:
