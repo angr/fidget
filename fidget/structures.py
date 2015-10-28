@@ -90,7 +90,7 @@ class Struct(object):
         self.variables = {} # all the variables, indexed by address
         self.addr_list = [] # all the addresses, kept sorted
         self.conc_size = 0
-        self.sym_size = claripy.BV("stack_size", arch.bits)
+        self.sym_size = claripy.BVS("stack_size", arch.bits)
         self.unsafe_constraints = []
         self.name = self._make_name()
 
@@ -119,7 +119,7 @@ class Struct(object):
 
         if access.conc_addr not in self.variables:
             name_prefix = 'var' if access.conc_addr < 0 else 'arg'
-            sym_addr = claripy.BV('%s_%x' % (name_prefix, abs(access.conc_addr)), self.arch.bits)
+            sym_addr = claripy.BVS('%s_%x' % (name_prefix, abs(access.conc_addr)), self.arch.bits)
             self.add_variable(Variable(access.conc_addr, sym_addr))
         self.variables[access.conc_addr].add_access(access)
 
@@ -184,7 +184,7 @@ class Struct(object):
                 # If we're the last free-floating variable, set a solid bottom
                 solver.add(var.sym_addr <= var.conc_addr)
                 if var.size is not None:
-                    solver.add(var.sym_addr <= var.sym_addr + var.size)
+                    solver.add(claripy.SLE(var.sym_addr, var.sym_addr + var.size))
                     solver.add(var.sym_addr + var.size <= next_var.sym_addr)
                     self.unsafe_constraints.append(var.sym_addr + var.size < next_var.sym_addr)
             else:

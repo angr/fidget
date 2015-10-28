@@ -121,8 +121,8 @@ class Fidget(object):
             l.error('\tFunction has invalid stack size of %#x', stack.conc_size)
             return False
 
-    # Find the lowest sp-access that isn't an argument to the next function
-    # By starting at accesses to [esp] and stepping up a word at a time
+        # Find the lowest sp-access that isn't an argument to the next function
+        # By starting at accesses to [esp] and stepping up a word at a time
         if self.project.arch.name == 'X86':
             last_addr = -stack.conc_size
             for var in stack:
@@ -199,7 +199,7 @@ class Fidget(object):
             else:
                 l.debug("Failed to add unsafe constraint: %s", constraint)
 
-        new_stack = solver.eval(stack.sym_size, 1)[0].value
+        new_stack = solver.eval(stack.sym_size, 1)[0]
         if new_stack == stack.conc_size:
             l.warning('\tUnable to resize stack')
             return False
@@ -207,7 +207,7 @@ class Fidget(object):
         l.info('\tResized stack from 0x%x to 0x%x', stack.conc_size, new_stack)
 
         for var in stack:
-            fixedval = solver.eval(var.sym_addr, 1)[0].signed
+            fixedval = solver.eval_to_ast(var.sym_addr, 1)[0]._model_concrete.signed
             if var.size is None:
                 l.debug('Moved %#x (unsized) to %#x', var.conc_addr, fixedval)
             else:

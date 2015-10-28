@@ -163,7 +163,7 @@ class BinaryData(object):
 
         patch_bytes = self._get_patched_instruction(value=value, solver=solver)
         if value is None:
-            value = solver.eval(self.patch_value_expression, 1)[0].signed
+            value = solver.eval_to_ast(self.patch_value_expression, 1)[0]._model_concrete.signed
         l.debug('Patching address %#x with value %#x', self.addr, value)
         if patch_bytes == self._insbytes:
             return []
@@ -178,7 +178,7 @@ class BinaryData(object):
     def _imm(self, size, name=None):
         if name is None:
             name = 'imm%d' % size
-        return claripy.BV('%x_%s' % (self.addr, name), size)
+        return claripy.BVS('%x_%s' % (self.addr, name), size)
 
     def _search_value(self):
         if self._arm:
@@ -704,7 +704,7 @@ class BinaryData(object):
             solver = claripy.Solver()
             solver.add(value == self.patch_value_expression)
         try:
-            insn_int = solver.eval(self.patch_bytes_expression, 1)[0].value
+            insn_int = solver.eval(self.patch_bytes_expression, 1)[0]
         except claripy.UnsatError:
             raise ValueNotFoundError('Unsat on solve!')
         return self._insn_to_string(insn_int)
