@@ -1,20 +1,11 @@
 before_script:
     - angr-test sync hard
 
+### local
 fidget:
     script: "angr-test fidget"
-    tags:
-        - "angr"
+    tags: [angr]
 
-# nothing depends on fidget!
-#reverse_deps:
-#    script: "angr-test"
-#    tags:
-#        - "angr"
-#    except:
-#        - "master"
-
-fidget_lint:
+lint:
     script: "angr-test lint"
-    tags:
-        - "angr"
+    tags: [angr]
