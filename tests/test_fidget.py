@@ -5,7 +5,7 @@ import testinfo
 
 testloc = str(os.path.realpath(os.path.join(os.path.dirname(os.path.realpath(__file__)), '../../binaries/tests')))
 
-arches = ['x86_64', 'i386', 'armel', 'armhf', 'aarch64', 'ppc', 'ppc64', 'mips', 'mipsel', 'mips64']
+arches = ['x86_64', 'i386', 'armel', 'armhf', 'aarch64', 'ppc', 'ppc64', 'mips', 'mipsel'] #, 'mips64']
 ctf_binaries = ['x86_64/ctf_shifty', 'i386/ctf_nuclear', 'ppc/ctf_deepblue']
 
 def test_arrays():
