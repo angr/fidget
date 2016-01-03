@@ -4,6 +4,7 @@ from .errors import FidgetUnsupportedError, \
                     ValueNotFoundError, \
                     FuzzingAssertionFailure
 from pyvex import PyVEXError
+from angr import AngrTranslationError
 import claripy
 from claripy import BVV
 
@@ -679,7 +680,7 @@ class BinaryData(object):
                         insn_bytes=self._get_patched_instruction(challenger),
                         opt_level=1
                     ).vex
-            except PyVEXError:
+            except (PyVEXError, AngrTranslationError):
                 return False
             okay = (basic, unsign_int(challenger, size))
             try:
