@@ -251,12 +251,12 @@ class StructureAnalysis(object):
 
         for func in self.functions_list:
             try:
-                struct = self.analyze_stack(func._addr)
+                struct = self.analyze_stack(func.addr)
             except FidgetAnalysisFailure:
                 pass
             else:
                 self.add_struct(struct)
-                self.stack_frames[func._addr] = struct.name
+                self.stack_frames[func.addr] = struct.name
 
         if chase_structs:
             raise FidgetUnsupportedError("lmao what")
