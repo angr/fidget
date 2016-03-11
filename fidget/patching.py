@@ -100,7 +100,7 @@ class Fidget(object):
     def patch_function_stack(self, func, safe=False, largemode=False):
         solver = claripy.Solver()
         analysis_result = StructureAnalysis(self.project, self.cfg, [func], False)
-        stack = analysis_result.stack_frames[func._addr]
+        stack = analysis_result.stack_frames[func.addr]
         if stack is None:
             return
         stack = analysis_result.structures[stack]
@@ -188,7 +188,7 @@ class Fidget(object):
         #print
 
         if not solver.satisfiable():
-            l.critical('(%#x) Safe constraints unsatisfiable, fix this NOW', func._addr)
+            l.critical('(%#x) Safe constraints unsatisfiable, fix this NOW', func.addr)
             raise FidgetError("You're a terrible programmer")
 
         # z3 is smart enough that this doesn't add any noticable overhead

@@ -251,12 +251,12 @@ class StructureAnalysis(object):
 
         for func in self.functions_list:
             try:
-                struct = self.analyze_stack(func._addr)
+                struct = self.analyze_stack(func.addr)
             except FidgetAnalysisFailure:
                 pass
             else:
                 self.add_struct(struct)
-                self.stack_frames[func._addr] = struct.name
+                self.stack_frames[func.addr] = struct.name
 
         if chase_structs:
             raise FidgetUnsupportedError("lmao what")
@@ -267,6 +267,7 @@ class StructureAnalysis(object):
     @staticmethod
     def real_functions(cfg):
         project = cfg._project
+        funcman = project.kb.functions
 
         # Find the real _start on MIPS so we don't touch it
         do_not_touch = None
@@ -277,7 +278,7 @@ class StructureAnalysis(object):
                         do_not_touch = succ.addr
                         l.debug('Found MIPS entry point stub target %#x', do_not_touch)
 
-        for funcaddr, func in cfg.function_manager.functions.iteritems():
+        for funcaddr, func in funcman.iteritems():
             # But don't touch _start. Seriously.
             if funcaddr == project.entry:
                 l.debug('Skipping entry point')
@@ -357,7 +358,7 @@ class StructureAnalysis(object):
 
             headcache.add(blockstate.addr)
             for addr in mark_addrs:
-                if addr != funcaddr and addr in self.cfg.function_manager.functions:
+                if addr != funcaddr and addr in self.project.kb.functions:
                     l.warning("\tThis function jumps into another function (%#x). Abort.", addr)
                     raise FidgetAnalysisFailure
                 cache.add(addr)
