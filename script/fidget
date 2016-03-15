@@ -3,7 +3,6 @@
 import sys, traceback
 import ipdb
 import logging
-from fidget import patch_file       # pylint: disable=import-self
 
 l = logging.getLogger('fidget')
 
@@ -237,6 +236,9 @@ def main():
             handler = logging.FileHandler(logfile)
         handler.setFormatter(formatter)
         logging.root.addHandler(handler)
+
+        # very specific import position to dance around angr's bullshit auto-logging-levels
+        from fidget import patch_file       # pylint: disable=import-self
 
         for tag, lvl in logopt.iteritems():
             logging.getLogger(tag).setLevel(lvl)
