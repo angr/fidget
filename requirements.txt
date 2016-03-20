@@ -1,2 +1,2 @@
-git+ssh://git@git.seclab.cs.ucsb.edu/angr/angr.git
+angr
 ipdb
