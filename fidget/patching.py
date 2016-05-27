@@ -28,7 +28,7 @@ class Fidget(object):
             if debugangr:
                 import ipdb; ipdb.set_trace()
             self.project = Project(infile, load_options={'auto_load_libs': False})
-            self.cfg = self.project.analyses.CFG(**cfg_options)
+            self.cfg = self.project.analyses.CFGAccurate(**cfg_options)
             try:
                 fh = open(cachename, 'wb')
                 pickle.dump((self.project, self.cfg), fh)
