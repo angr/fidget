@@ -22,7 +22,7 @@ class Fidget(object):
             if not cache: raise IOError('fuck off')
             fh = open(cachename, 'rb')
             self.project, self.cfg = pickle.load(fh)
-            self.cfg._project = self.project
+            self.cfg.project = self.project
             fh.close()
         except (IOError, OSError, pickle.UnpicklingError):
             if debugangr:

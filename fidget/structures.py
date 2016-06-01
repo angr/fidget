@@ -266,7 +266,7 @@ class StructureAnalysis(object):
 
     @staticmethod
     def real_functions(cfg):
-        project = cfg._project
+        project = cfg.project
         funcman = project.kb.functions
 
         # Find the real _start on MIPS so we don't touch it
