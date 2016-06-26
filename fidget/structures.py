@@ -245,7 +245,7 @@ class StructureAnalysis(object):
         self.stack_frames = defaultdict(lambda: None)
 
         if self.cfg is None:
-            self.cfg = project.analyses.CFGAccurage(enable_symbolic_back_traversal=True)
+            self.cfg = project.analyses.CFGAccurate(enable_symbolic_back_traversal=True, keep_state=True)
         if self.functions_list is None:
             self.functions_list = self.real_functions(self.cfg)
 
