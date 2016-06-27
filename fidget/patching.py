@@ -31,7 +31,7 @@ class Fidget(object):
             self.cfg = self.project.analyses.CFGAccurate(**cfg_options)
             try:
                 fh = open(cachename, 'wb')
-                pickle.dump((self.project, self.cfg), fh)
+                pickle.dump((self.project, self.cfg), fh, -1)
                 fh.close()
             except (IOError, OSError, pickle.PicklingError):
                 l.exception('Error pickling CFG')
