@@ -29,6 +29,6 @@ def test_ctf():
         yield testinfo.test_single_binary, binary
 
 if __name__ == '__main__':
-    for testiter in (test_arrays(), test_loops(), test_division(), test_ctf()):
+    for testiter in (test_ctf(), test_arrays(), test_loops(), test_division(), test_ctf()):
         for testfunc in testiter:
             testfunc[0](testfunc[1])
