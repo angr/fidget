@@ -250,12 +250,12 @@ class BlockState(object):
                 if size == 32:
                     values = BiHead(
                             claripy.FPV(expr.value, claripy.fp.FSORT_FLOAT),
-                            claripy.FloatingPoint('%x_%d' % (addr, path[1]), claripy.fp.FSORT_FLOAT)
+                            claripy.FPS('%x_%d' % (addr, path[1]), claripy.fp.FSORT_FLOAT)
                         )
                 elif size == 64:
                     values = BiHead(
                             claripy.FPV(expr.value, claripy.fp.FSORT_DOUBLE),
-                            claripy.FloatingPoint('%x_%d' % (addr, path[1]), claripy.fp.FSORT_DOUBLE)
+                            claripy.FPS('%x_%d' % (addr, path[1]), claripy.fp.FSORT_DOUBLE)
                         )
                 else:
                     raise FidgetUnsupportedError("Why is there a FP const of size %d" % size)

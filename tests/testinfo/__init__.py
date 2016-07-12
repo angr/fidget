@@ -1,7 +1,7 @@
 import os, time
 import subprocess
 import nose
-from fidget import Fidget
+from fidget import Fidget, FidgetDefaultTechnique
 
 CTF_WINNER = 'Haha totally pwned'
 ARRAYS_OUTPUT = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ\n'
@@ -51,7 +51,7 @@ def generic_ctf_test(binary, tester, always, winner):
     patched_binary = binary + '.out'
 
     fidgetress = Fidget(binary)
-    fidgetress.patch(stacks={'blacklist': ['_init']})
+    fidgetress.patch(stacks={'technique': FidgetDefaultTechnique(), 'blacklist': ['_init']})
     nose.tools.assert_not_equals(len(fidgetress.dump_patches()), 0)
     fidgetress.apply_patches(patched_binary)
 
@@ -73,7 +73,7 @@ def generic_test(binary, expected):
     nose.tools.assert_in(expected, output)
 
     fidgetress = Fidget(binary)
-    fidgetress.patch(stacks={'blacklist': ['_init']})
+    fidgetress.patch(stacks={'technique': FidgetDefaultTechnique(), 'blacklist': ['_init']})
     nose.tools.assert_not_equals(len(fidgetress.dump_patches()), 0)
     fidgetress.apply_patches(patched_binary)
 

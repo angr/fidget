@@ -14,7 +14,7 @@ class Fidget(object):
         self.error = False
         self._stack_patch_data = []
         if cfg_options is None:
-            cfg_options = {'enable_symbolic_back_traversal': True}
+            cfg_options = {}
         cachename = infile + '.fcfg'
 
         l.info("Loading %s", infile)
@@ -28,7 +28,7 @@ class Fidget(object):
             if debugangr:
                 import ipdb; ipdb.set_trace()
             self.project = Project(infile, load_options={'auto_load_libs': False})
-            self.cfg = self.project.analyses.CFGAccurate(**cfg_options)
+            self.cfg = self.project.analyses.CFGFast(**cfg_options)
             try:
                 fh = open(cachename, 'wb')
                 pickle.dump((self.project, self.cfg), fh, -1)
@@ -69,7 +69,8 @@ class Fidget(object):
     def patch(self, **options):
         self.patch_stack(**options.pop('stacks', {})) # :(
 
-    def patch_stack(self, whitelist=None, blacklist=None, **kwargs):
+    def patch_stack(self, technique, whitelist=None, blacklist=None):
+        technique.set_project(self.project)
         whitelist = whitelist if whitelist is not None else []
         blacklist = blacklist if blacklist is not None else []
         l.debug('Patching function stacks')
@@ -86,7 +87,7 @@ class Fidget(object):
                 continue
 
             l.info('Patching stack of %s', func.name)
-            self.patch_function_stack(func, **kwargs)
+            self.patch_function_stack(func, technique)
             if len(self._stack_patch_data) > last_size:
                 last_size = len(self._stack_patch_data)
                 successes += 1
@@ -97,7 +98,7 @@ class Fidget(object):
             l.info('Patched %d/%d functions', successes, totals)
 
 
-    def patch_function_stack(self, func, safe=False, largemode=False):
+    def patch_function_stack(self, func, technique):
         solver = claripy.Solver()
         analysis_result = StructureAnalysis(self.project, self.cfg, [func], False)
         stack = analysis_result.stack_frames[func.addr]
@@ -121,29 +122,6 @@ class Fidget(object):
             l.error('\tFunction has invalid stack size of %#x', stack.conc_size)
             return False
 
-        # Find the lowest sp-access that isn't an argument to the next function
-        # By starting at accesses to [esp] and stepping up a word at a time
-        if self.project.arch.name == 'X86':
-            last_addr = -stack.conc_size
-            for var in stack:
-                if var.conc_addr != last_addr:
-                    break
-                last_addr += self.project.arch.bytes
-                #var.special_top = True
-                #l.debug("Marked TOP addr %d as special", var.conc_addr)
-
-        last_addr = None
-        for var in reversed(stack):
-            if last_addr is None:
-                if var.conc_addr < 0:
-                    break       # why would this happen
-                last_addr = var.conc_addr
-            if var.conc_addr != last_addr:
-                break
-            last_addr -= self.project.arch.bytes
-            var.special_bottom = True
-            l.debug("Marked BOTTOM addr %d as special", var.conc_addr)
-
         if stack.num_vars == 0:
             l.info("\tFunction has %#x-byte stack frame, but doesn't use it for local vars", stack.conc_size)
             return False
@@ -155,37 +133,9 @@ class Fidget(object):
             'is' if stack.num_accs == 1 else 'are')
 
         l.debug('Stack addresses: [%s]', ', '.join(hex(var.conc_addr) for var in stack))
-
-        stack.collapse()
-        stack.mark_sizes()
-
-        stack.alloc_op.apply_constraints(solver)
-        solver.add(stack.alloc_op.symval == -stack.sym_size)
-        for op in stack.dealloc_ops:
-            op.apply_constraints(solver)
-            solver.add(op.symval == 0)
-
-        if largemode and not safe:
-            solver.add(stack.sym_size <= stack.conc_size + (1024 * stack.num_vars + 2048))
-            stack.unsafe_constraints.append(stack.sym_size >= stack.conc_size + (1024 * stack.num_vars))
-            stack.unsafe_constraints.append(stack.sym_size >= 0x78)
-            stack.unsafe_constraints.append(stack.sym_size >= 0xF8)
-        elif largemode and safe:
-            solver.add(stack.sym_size <= stack.conc_size + 1024*16)
-            stack.unsafe_constraints.append(stack.sym_size >= stack.conc_size + 1024*8)
-            stack.unsafe_constraints.append(stack.sym_size >= 0x78)
-            stack.unsafe_constraints.append(stack.sym_size >= 0xF0)
-        elif not largemode and safe:
-            solver.add(stack.sym_size <= stack.conc_size + 256)
-        elif not largemode and not safe:
-            solver.add(stack.sym_size <= stack.conc_size + (16 * stack.num_vars + 32))
-
-        stack.sym_link(solver, safe=safe)
-
-        # OKAY HERE WE GO
-        #print '\nConstraints:'
-        #vexutils.columnize(str(x) for x in solver.constraints)
-        #print
+        l.debug('Running strategy...')
+        technique.constrain_variables(func, solver, stack)
+        l.debug('Stack variables: [%s]', ', '.join(hex(var.conc_addr) for var in stack))
 
         if not solver.satisfiable():
             l.critical('(%#x) Safe constraints unsatisfiable, fix this NOW', func.addr)
@@ -204,7 +154,7 @@ class Fidget(object):
             l.warning('\tUnable to resize stack')
             return False
 
-        l.info('\tResized stack from 0x%x to 0x%x', stack.conc_size, new_stack)
+        l.info('\tResized stack from %#x to %#x', stack.conc_size, new_stack)
 
         for var in stack:
             fixedval = solver.eval_to_ast(var.sym_addr, 1)[0]._model_concrete.signed

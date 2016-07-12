@@ -301,7 +301,7 @@ class StructureAnalysis(object):
                 continue
 
             # If the text section exists, only patch functions in it
-            if '.text' not in project.loader.main_bin.sections_map:
+            if '.text' in project.loader.main_bin.sections_map:
                 sec = project.loader.main_bin.find_section_containing(funcaddr)
                 if sec is None or sec.name != '.text':
                     l.debug('Skipping function %s not in .text', func.name)
