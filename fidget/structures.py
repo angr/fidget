@@ -72,7 +72,7 @@ class Variable(object):
         if self.special_bottom:
             solver.add(self.sym_addr == self.conc_addr)
         if self.special_top:
-            solver.add(self.sym_addr == (self.conc_addr - stack.conc_size) + stack.sym_size)
+            solver.add(self.sym_addr == -stack.sym_size + (self.conc_addr - -stack.conc_size))
         if self.special:
             return
 
@@ -163,71 +163,11 @@ class Struct(object):
         out += sum((dealloc.get_patch_data(solver) for dealloc in self.dealloc_ops), [])
         return out
 
-    def sym_link(self, solver, safe=False):
-        solver.add(self.sym_size >= self.conc_size)
-        solver.add(self.sym_size % (self.arch.bytes) == 0)
-        self.unsafe_constraints.append(self.sym_size > self.conc_size)
-
-        first = self.variables[self.addr_list[0]]
-        solver.add(first.sym_addr >= (first.conc_addr + self.conc_size) - self.sym_size)
-        var_list = list(self)
-        for var, next_var in zip(var_list, var_list[1:] + [None]):
-            var.sym_link(solver, self)
-            self.unsafe_constraints.extend(var.unsafe_constraints)
-            if var.conc_addr % (self.arch.bytes) == 0:
-                solver.add(var.sym_addr % (self.arch.bytes) == 0)
-
-            if var.special:
-                # We're one of the args that needs to stay fixed relative somewhere
-                pass
-            elif next_var is None or next_var.special:
-                # If we're the last free-floating variable, set a solid bottom
-                solver.add(var.sym_addr <= var.conc_addr)
-                if var.size is not None:
-                    solver.add(claripy.SLE(var.sym_addr, var.sym_addr + var.size))
-                    solver.add(var.sym_addr + var.size <= next_var.sym_addr)
-                    self.unsafe_constraints.append(var.sym_addr + var.size < next_var.sym_addr)
-            else:
-                # Otherwise we're one of the free-floating variables
-                solver.add(var.sym_addr <= var.sym_addr + var.size)
-                self.unsafe_constraints.append(var.sym_addr + var.size < next_var.sym_addr)
-                if safe:
-                    solver.add(var.sym_addr + var.size == next_var.sym_addr)
-                else:
-                    solver.add(var.sym_addr + var.size <= next_var.sym_addr)
-
-    def collapse(self):
-        i = 0               # old fashioned loop because we're removing items
-        while i < len(self.addr_list) - 1:
-            i += 1
-            var = self.variables[self.addr_list[i]]
-            if var.special:
-                continue
-            if var.conc_addr % (self.arch.bytes) != 0:
-                self.merge_up(i)
-                i -= 1
-            elif var.access_flags & 8:
-                self.merge_up(i)
-                i -= 1
-            elif var.access_flags & 4:
-                pass
-            elif var.access_flags != 3:
-                self.merge_up(i)
-                i -= 1
-
     def merge_up(self, i):
         child = self.variables.pop(self.addr_list.pop(i))
         parent = self.variables[self.addr_list[i-1]]
         parent.merge(child)
         l.debug('Merged %s into %s', hex(child.conc_addr), hex(parent.conc_addr))
-
-    def mark_sizes(self):
-        for i, addr in enumerate(self.addr_list[:-1]):
-            var = self.variables[addr]
-            next_var = self.variables[self.addr_list[i+1]]
-            var.size = next_var.conc_addr - var.conc_addr
-        var = self.variables[self.addr_list[-1]]
-        var.size = None
 
 
 class StructureAnalysis(object):
