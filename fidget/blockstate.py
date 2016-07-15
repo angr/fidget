@@ -327,10 +327,11 @@ class BlockState(object):
             raise FidgetUnsupportedError('Unknown expression tag ({:#x}): {!r}'.format(addr, expr.tag))
 
     def end(self, clean=False):
-        for offset, name in self.project.arch.register_names.iteritems():
+        for name in self.project.arch.default_symbolic_registers:
+            offset = self.project.arch.registers[name][0]
             if offset in (self.project.arch.sp_offset, self.project.arch.bp_offset, self.project.arch.ip_offset):
                 continue
-            if offset == 36 and self.project.arch.name.startswith('ARM') and self.addr & 1 == 1:
+            if name == 'r7' and self.project.arch.name.startswith('ARM') and self.addr & 1 == 1:
                 continue
             # values remaining in registers at end-of-block are pointers! Probably.
             value = getattr(self.state.regs, name)

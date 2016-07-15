@@ -30,6 +30,10 @@ class Access(object):
     def sym_addr(self):
         return self.bindata.symval
 
+    @property
+    def stuck(self):
+        return len(self.bindata.dependencies) == 0
+
     def get_patches(self, solver):
         return self.bindata.get_patch_data(solver)
 
@@ -60,6 +64,8 @@ class Variable(object):
             self.access_flags = 9
         else:
             self.access_flags |= access.access_flags
+
+        self.special_bottom |= access.stuck
 
     def merge(self, child):
         for access in child.accesses:
@@ -316,7 +322,8 @@ class StructureAnalysis(object):
                 blockstate.tags = blockstate.tags[:-2]
                 # Do NOT discard the regs, as they constrain the amount that was added to sizeof(void*)
 
-            blockstate.end(clean=block.jumpkind == 'Ijk_Call')
+            if block.jumpkind != 'Ijk_End':
+                blockstate.end(clean=block.jumpkind == 'Ijk_Call')
 
             if block.jumpkind == 'Ijk_Call' or block.jumpkind in OK_CONTINUE_JUMPS:
 

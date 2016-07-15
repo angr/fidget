@@ -40,12 +40,6 @@ class FidgetDefaultTechnique(FidgetTechnique):
         #    var.special_bottom = True
         #    l.debug("Marked BOTTOM addr %d as special", var.conc_addr)
 
-        for var in stack:
-            if var.conc_addr < 0:
-                continue
-            var.special_bottom = True
-            l.debug("Marked BOTTOM addr %d as special", var.conc_addr)
-
         self.collapse(stack)
         self.mark_sizes(stack)
 
@@ -113,10 +107,10 @@ class FidgetDefaultTechnique(FidgetTechnique):
             var = stack.variables[stack.addr_list[i]]
             if var.special:
                 continue
-            if var.conc_addr % (stack.arch.bytes) != 0:
-                stack.merge_up(i)
-                i -= 1
-            elif var.access_flags & 8:
+            #if var.conc_addr % (stack.arch.bytes) != 0:
+            #    stack.merge_up(i)
+            #    i -= 1
+            if var.access_flags & 8:
                 stack.merge_up(i)
                 i -= 1
             elif var.access_flags & 4:
