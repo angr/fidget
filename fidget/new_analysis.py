@@ -409,13 +409,6 @@ class OffsetAnalysis(angr.Analysis):
         :param overwrite:       Whether to use the semantics that one is "overwriting" two
         """
 
-        # TODO: Figure out what to do if we're given a non-pointer value with no source label
-        # can this happen? are we guaranteed that every value will end up with a source label
-        # at some point in the execution? if we see this should we just wait and know that we'll
-        # end up back here again soon?
-        if one is two:
-            return      # trivial case
-
         one_ty = self.ty_backend.convert(one).ty
         two_ty = self.ty_backend.convert(two).ty
 
@@ -506,11 +499,14 @@ class BlanketExecution(angr.exploration_techniques.ExplorationTechnique):
     """
     This is the otiegnqwvk that controls the execution. No analysis should happen in here,
     this is all just clerical work to give the analysis what it wants to see
+
+    This is starting to look a lot like a weird inverted implementation of ForwardAnalysis :(
     """
     def __init__(self, cfg):
         super(BlanketExecution, self).__init__()
         self.seen_addrs = set()
         self.cfg = cfg
+        self.merge_point_states = {}
 
     def step(self, pg, stash, **kwargs):
         kwargs['successor_func'] = self.normalized_step
@@ -527,11 +523,6 @@ class BlanketExecution(angr.exploration_techniques.ExplorationTechnique):
         return None
 
     def normalized_step(self, path):
-        node = self.cfg.get_any_node(path.addr)
-        path.step(num_inst=len(node.instruction_addrs) if node is not None else None)
-        successors = path.successors + path.unconstrained_successors
-        real_successors = []
-
         ideal_successors = set()
         for ctx in self.cfg.get_all_nodes(path.addr):
             for succ, jk in self.cfg.get_successors_and_jumpkind(ctx, excluding_fakeret=False):
@@ -544,6 +535,10 @@ class BlanketExecution(angr.exploration_techniques.ExplorationTechnique):
                         pass
                 else:
                     ideal_successors.add(succ.addr)
+
+        path.step(num_inst=len(node.instruction_addrs) if node is not None else None)
+        successors = path.successors + path.unconstrained_successors
+        real_successors = []
 
         for succ in successors:
             if succ.jumpkind == 'Ijk_Ret':
