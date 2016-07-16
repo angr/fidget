@@ -90,6 +90,8 @@ class BinaryData(object):
         self._inslen = len(self._insbytes)
 
         self.patch_bytes_expression = None
+        self.patch_bytes_offset = 0
+        self.patch_bytes_size = None
         self.patch_value_expression = None
         self._test_values = ()
         self._already_patched = False
@@ -171,7 +173,10 @@ class BinaryData(object):
         physaddr = self._project.loader.main_bin.addr_to_offset(self.addr)
         if self._armthumb: physaddr -= 1
         self._already_patched = True
-        return [(physaddr, patch_bytes)]
+        if self.patch_bytes_size is None:
+            self.patch_bytes_size = len(patch_bytes)
+        real_bytes = patch_bytes[self.patch_bytes_offset:self.patch_bytes_offset+self.patch_bytes_size]
+        return [(physaddr + self.patch_bytes_offset, real_bytes)]
 
     def _error(self):
         raise ValueNotFoundError('Value not found: %#x at %#x' % (self.unsigned_value, self.addr))
@@ -621,6 +626,13 @@ class BinaryData(object):
                             acc = claripy.Concat(insn[insn.length-1:bit_offset+word_size], imm)
                         if bit_offset != 0:
                             acc = claripy.Concat(acc, insn[bit_offset-1:0])
+
+                        if self._project.arch.memory_endness == 'Iend_LE':
+                            self.patch_bytes_offset = bit_offset/8
+                        else:
+                            self.patch_bytes_offset = self._inslen - (bit_offset + word_size)/8
+
+                        self.patch_bytes_size = word_size/8
                         self.patch_bytes_expression = acc
                         self._test_values = (-(1 << word_size) >> 1, ((1 << word_size) >> 1) - 1)
 
@@ -643,6 +655,13 @@ class BinaryData(object):
                         else:
                             acc = claripy.Concat(insn[insn.length-1:bit_offset+word_size], imm)
                         acc = claripy.Concat(acc, insn[bit_offset+1:0])
+
+                        if self._project.arch.memory_endness == 'Iend_LE':
+                            self.patch_bytes_offset = bit_offset/8
+                        else:
+                            self.patch_bytes_offset = self._inslen - (bit_offset + word_size)/8
+
+                        self.patch_bytes_size = word_size/8
                         self.patch_bytes_expression = acc
                         self._test_values = (-(1 << word_size) >> 1, ((1 << word_size) >> 1) - 4)
                         if self.sanity_check():

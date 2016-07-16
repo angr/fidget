@@ -241,7 +241,8 @@ class OffsetAnalysis(angr.Analysis):
             for reg, val in self.function_initial_regs[func].iteritems():
                 state.registers.store(reg, val)
             pg = self.project.factory.path_group(state)
-            pg.use_technique(BlanketExecution(self.cfg))
+            blanket = BlanketExecution(self.cfg)
+            pg.use_technique(blanket)
             pg.use_technique(AbortAtOtherFunctions(self.cfg, func))
             self.pass_results = []
             pg.run()
@@ -249,6 +250,15 @@ class OffsetAnalysis(angr.Analysis):
                 if 'finished' in pg.stashes:
                     for finished in pg.finished:
                         self._runtime_unify(finished.state, self.function_return_vals[func], finished.state.regs.eax, overwrite=False)
+
+            if 'not_unique' in pg.stashes:
+                for mergable in pg.not_unique:
+                    if mergable.addr not in blanket.merge_point_states:
+                        import ipdb; ipdb.set_trace()
+                        print 'the fuck is this'
+                    orig_state = blanket.merge_point_states[mergable.addr]
+                    for reg in self.project.arch.default_symbolic_registers:
+                        self._runtime_unify(state, mergable.state.registers.load(reg), orig_state.registers.load(reg), stack_frame=reg == 'esp', overwrite=False)
 
             if not self.pass_results:
                 break
@@ -267,11 +277,9 @@ class OffsetAnalysis(angr.Analysis):
                     one, two = data
                     one_ty = self.ty_backend.convert(one).ty
                     two_ty = self.ty_backend.convert(two).ty
-                    if type(one_ty) is s_type.SimTypePointer:
+                    if type(one_ty) is s_type.SimTypePointer and type(two_ty) is s_type.SimTypePointer:
                         import ipdb; ipdb.set_trace()
                         print 'uh. gotta do a weird thing here!'
-                    elif len(one_ty.label) == 1:
-                        one_ty.label[0].write_value(self, two)
                     else:
                         import ipdb; ipdb.set_trace()
                         print 'what the shit is this'
@@ -389,7 +397,10 @@ class OffsetAnalysis(angr.Analysis):
                         else:
                             import ipdb; ipdb.set_trace()
                             # I don't THINK this should ever happen.... pdb to make sure assumptions are good
-                            self._runtime_unify(state, state.regs.eax, self.function_return_vals[target])
+                            # reason: there are only multiple call targets if it's a call table. entries in a call table
+                            # are typically not reused, and function_return_vals entries are only set from analyses
+                            # of the caller.
+                            self._runtime_unify(state, state.regs.eax, self.function_return_vals[target], overwrite=False)
 
                 if are_any:
                     for target in all_targets:
@@ -476,19 +487,27 @@ class OffsetAnalysis(angr.Analysis):
                     print 'okay??'
 
         # when only one of them is a pointer!
-        # if a source is available we should toss it to UNIFY, she'll just drop the other in!
+        # if a source is available we should toss it to SOURCE, she'll just drop the other in!
         # if a source is not available, wait. eventually one will be available :)
         elif type(two_ty) is s_type.SimTypePointer:
             if len(one_ty.label) > 0:
-                self.pass_results.append(('UNIFY', (one, two)))
+                if len(one_ty.label) > 1:
+                    import ipdb; ipdb.set_trace()
+                    print '????????????'
+                self.pass_results.append(('SOURCE', one_ty.label[0]))
 
         # this is where overwrite semantics comes into play.
         # if one overwrites two, then we can't mark two as a pointer just because 1 is a pointer.
         # otherwise, this is the same as the previous case I guess?
+        # I'm not sure what good this does
         elif type(one_ty) is s_type.SimTypePointer:
+            import ipdb; ipdb.set_trace()
             if not overwrite:
                 if len(two_ty.label) > 0:
-                    self.pass_results.append(('UNIFY', (two, one)))
+                    if len(two_ty.label) > 1:
+                        import ipdb; ipdb.set_trace()
+                        print '????????????'
+                    self.pass_results.append(('SOURCE', two_ty.label[0]))
 
         # If neither of them are pointers bail out. this is not a general type inference :)
         else:
@@ -506,7 +525,7 @@ class BlanketExecution(angr.exploration_techniques.ExplorationTechnique):
         super(BlanketExecution, self).__init__()
         self.seen_addrs = set()
         self.cfg = cfg
-        self.merge_point_states = {}
+        self.merge_point_states = collections.defaultdict(list)
 
     def step(self, pg, stash, **kwargs):
         kwargs['successor_func'] = self.normalized_step
@@ -524,7 +543,10 @@ class BlanketExecution(angr.exploration_techniques.ExplorationTechnique):
 
     def normalized_step(self, path):
         ideal_successors = set()
+        pre_owned = True
         for ctx in self.cfg.get_all_nodes(path.addr):
+            if len(ctx.predecessors) > 1:
+                self.merge_point_states[path.addr].append(path.state)
             for succ, jk in self.cfg.get_successors_and_jumpkind(ctx, excluding_fakeret=False):
                 if jk in ('Ijk_Call', 'Ijk_Ret'):
                     continue
