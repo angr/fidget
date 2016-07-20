@@ -165,6 +165,6 @@ class Fidget(object):
                 l.debug('Moved %#x (size %#x) to %#x', var.conc_addr, var.size, fixedval)
 
         self._stack_patch_data += stack.get_patches(solver)
-        self.stack_resizes[func.addr] = new_stack - stack.conc_size
+        self.stack_increases[func.addr] = new_stack - stack.conc_size
         return True
 
