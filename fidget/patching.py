@@ -13,6 +13,7 @@ class Fidget(object):
         self.infile = infile
         self.error = False
         self._stack_patch_data = []
+        self.stack_increases = {}
         if cfg_options is None:
             cfg_options = {}
         cachename = infile + '.fcfg'
@@ -164,5 +165,6 @@ class Fidget(object):
                 l.debug('Moved %#x (size %#x) to %#x', var.conc_addr, var.size, fixedval)
 
         self._stack_patch_data += stack.get_patches(solver)
+        self.stack_resizes[func.addr] = new_stack - stack.conc_size
         return True
 
