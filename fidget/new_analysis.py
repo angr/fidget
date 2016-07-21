@@ -20,9 +20,6 @@ l = logging.getLogger('angr.analyses.offset_analysis')
 # we need to identify these sets.
 # the sets are TYPES
 
-class AnalysisFailure(Exception):
-    pass
-
 class Access(object):
     """
     There should be one of these for each read/write instruction in the whole binary
@@ -115,12 +112,8 @@ class OffsetAnalysis(angr.Analysis):
         self.initial_state.inspect.b('exit', when=simuvex.BP_BEFORE, action=self._exit_taken)
 
         for func in self.real_functions(self.cfg):
-            try:
-                l.info("Working on %s", func.name)
-                func.normalize()
-                self._init_analysis(func)
-            except AnalysisFailure:
-                pass
+            l.info("Working on %s", func.name)
+            self._init_analysis(func)
 
     def pointer_to_abstruct(self, abstruct):
         return claripy.BVV(abstruct.base, self.project.arch.bits).annotate(

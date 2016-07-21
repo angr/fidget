@@ -801,8 +801,6 @@ class BinaryDataConglomerate(object):
     def __str__(self):
         return 'BinaryData(%x)' % self.value
 
-bd_cache = {}
-
 class PendingBinaryData(object):
     __slots__ = ('project', 'addr', 'value', 'sym_value', 'path', '_hash')
     def __init__(self, project, addr, values, path):
@@ -813,6 +811,9 @@ class PendingBinaryData(object):
         self.path = tuple(path)
         self._hash = None
 
+        if not hasattr(project, 'bd_cache'):
+            project.bd_cache = {}
+
     def __hash__(self):
         if not self._hash: self._hash = hash(('pbd', self.project.filename, self.addr, self.value, self.path))
         return self._hash
@@ -821,8 +822,8 @@ class PendingBinaryData(object):
         return self.project.filename == other.project.filename and self.addr == other.addr and self.value == other.value and self.path == other.path
 
     def resolve(self):
-        if self in bd_cache:
-            return bd_cache[self]
+        if self in self.project.bd_cache:
+            return self.project.bd_cache[self]
         else:
             try:
                 binary_data = BinaryData(
@@ -835,7 +836,7 @@ class PendingBinaryData(object):
                 l.debug(e.message)
                 binary_data = self.value
             out = (self.sym_value, binary_data)
-            bd_cache[self] = out
+            self.project.bd_cache[self] = out
             return out
 
     @staticmethod
