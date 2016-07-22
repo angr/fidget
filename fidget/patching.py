@@ -116,11 +116,11 @@ class Fidget(object):
             return False
 
         if func.has_return and len(stack.dealloc_ops) == 0:
-            l.error('\tFunction does not ever deallocate stack frame (No zero alloc)')
+            l.warning('\tFunction does not ever deallocate stack frame (No zero alloc)')
             return False
 
         if stack.conc_size <= 0:
-            l.error('\tFunction has invalid stack size of %#x', stack.conc_size)
+            l.warning('\tFunction has invalid stack size of %#x', stack.conc_size)
             return False
 
         if stack.num_vars == 0:
@@ -142,6 +142,11 @@ class Fidget(object):
             l.critical('(%#x) Safe constraints unsatisfiable, fix this NOW', func.addr)
             raise FidgetError("You're a terrible programmer")
 
+        # bit of a hack: the first unsafe constraint is always the one making the stack bigger, so we can quick-bail if it fails
+        if not solver.satisfiable(extra_constraints=[stack.unsafe_constraints[0]]):
+            l.info('\tUnable to resize stack')
+            return False
+
         # z3 is smart enough that this doesn't add any noticable overhead
         for constraint in stack.unsafe_constraints:
             if solver.satisfiable(extra_constraints=[constraint]):
@@ -152,7 +157,7 @@ class Fidget(object):
 
         new_stack = solver.eval(stack.sym_size, 1)[0]
         if new_stack == stack.conc_size:
-            l.warning('\tUnable to resize stack')
+            l.info('\tUnable to resize stack')
             return False
 
         l.info('\tResized stack from %#x to %#x', stack.conc_size, new_stack)

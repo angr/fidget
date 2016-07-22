@@ -83,7 +83,7 @@ class FidgetDefaultTechnique(FidgetTechnique):
             if var.special:
                 # We're one of the args that needs to stay fixed relative somewhere
                 pass
-            elif next_var is None or next_var.special:
+            elif next_var is None or next_var.special_bottom:
                 # If we're the last free-floating variable, set a solid bottom
                 solver.add(var.sym_addr <= var.conc_addr)
                 if var.size is not None:
