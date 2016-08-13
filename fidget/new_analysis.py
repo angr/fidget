@@ -536,7 +536,6 @@ class BlanketExecution(angr.exploration_techniques.ExplorationTechnique):
 
     def normalized_step(self, path):
         ideal_successors = set()
-        pre_owned = True
         for ctx in self.cfg.get_all_nodes(path.addr):
             if len(ctx.predecessors) > 1:
                 self.merge_point_states[path.addr].append(path.state)
@@ -551,6 +550,7 @@ class BlanketExecution(angr.exploration_techniques.ExplorationTechnique):
                 else:
                     ideal_successors.add(succ.addr)
 
+        node = self.cfg.get_any_node(path.addr)
         path.step(num_inst=len(node.instruction_addrs) if node is not None else None)
         successors = path.successors + path.unconstrained_successors
         real_successors = []
