@@ -153,9 +153,9 @@ class BlockState(object):
 
         for stmt_idx, stmt in enumerate(block.statements):
             path = ['statements', stmt_idx]
-            self.handle_statement(stmt, path)
+            self.handle_statement(stmt, block.tyenv, path)
 
-    def handle_statement(self, stmt, path):
+    def handle_statement(self, stmt, tyenv, path):
         if stmt.tag in ('Ist_NoOp', 'Ist_AbiHint', 'Ist_MBE'):
             pass
 
@@ -163,22 +163,22 @@ class BlockState(object):
             self.addr = stmt.addr + stmt.delta
 
         elif stmt.tag == 'Ist_Exit':
-            self.handle_expression(stmt.dst, path + ['dst'])
+            self.handle_expression(stmt.dst, tyenv, path + ['dst'])
             # Let the cfg take care of control flow!
 
         elif stmt.tag == 'Ist_WrTmp':
-            expression = self.handle_expression(stmt.data, path + ['data'])
+            expression = self.handle_expression(stmt.data, tyenv, path + ['data'])
             self.put_tmp(stmt.tmp, expression)
 
         elif stmt.tag == 'Ist_Store':
-            expression = self.handle_expression(stmt.data, path + ['data'])
-            address = self.handle_expression(stmt.addr, path + ['addr'])
+            expression = self.handle_expression(stmt.data, tyenv, path + ['data'])
+            address = self.handle_expression(stmt.addr, tyenv, path + ['addr'])
             self.put_mem(address, expression)
             self.access(address, ACCESS_WRITE)
             self.access(expression, ACCESS_POINTER)
 
         elif stmt.tag == 'Ist_Put':
-            expression = self.handle_expression(stmt.data, path + ['data'])
+            expression = self.handle_expression(stmt.data, tyenv, path + ['data'])
             self.put_reg(stmt.offset, expression)
             if stmt.offset == self.project.arch.sp_offset:
                 if not expression.taints['concrete']:
@@ -188,7 +188,7 @@ class BlockState(object):
 
         elif stmt.tag == 'Ist_LoadG':
             # Conditional loads. Lots of bullshit.
-            addr_expression = self.handle_expression(stmt.addr, path + ['addr'])
+            addr_expression = self.handle_expression(stmt.addr, tyenv, path + ['addr'])
             self.access(addr_expression, ACCESS_READ)
 
             # load the actual data
@@ -206,20 +206,20 @@ class BlockState(object):
                 data_expression.taints['deps'] = deps
 
             self.put_tmp(stmt.dst, data_expression)
-            self.handle_expression(stmt.guard, path + ['guard'])
-            self.handle_expression(stmt.alt, path + ['alt'])
+            self.handle_expression(stmt.guard, tyenv, path + ['guard'])
+            self.handle_expression(stmt.alt, tyenv, path + ['alt'])
 
         elif stmt.tag == 'Ist_StoreG':
             # Conditional store
-            addr_expr = self.handle_expression(stmt.addr, path + ['addr'])
-            value_expr = self.handle_expression(stmt.data, path + ['data'])
-            self.handle_expression(stmt.guard, path + ['guard'])
+            addr_expr = self.handle_expression(stmt.addr, tyenv, path + ['addr'])
+            value_expr = self.handle_expression(stmt.data, tyenv, path + ['data'])
+            self.handle_expression(stmt.guard, tyenv, path + ['guard'])
             self.put_mem(addr_expr, value_expr)
             self.access(addr_expr, ACCESS_WRITE)
             self.access(value_expr, ACCESS_POINTER)
 
         elif stmt.tag == 'Ist_PutI':    # haha no
-            self.handle_expression(stmt.data, path + ['data'])
+            self.handle_expression(stmt.data, tyenv, path + ['data'])
         elif stmt.tag == 'Ist_CAS':     # HA ha no
             if stmt.oldLo != 4294967295:
                 self.tempstore.default(stmt.oldLo)
@@ -231,16 +231,16 @@ class BlockState(object):
         else:
             raise FidgetUnsupportedError("Unknown vex instruction???", stmt)
 
-    def handle_expression(self, expr, path):
-        size = expr.result_size if not expr.tag.startswith('Ico_') else expr.size
-        ty = expr.result_type if not expr.tag.startswith('Ico_') else expr.type
+    def handle_expression(self, expr, tyenv, path):
+        size = expr.result_size(tyenv) if not expr.tag.startswith('Ico_') else expr.size
+        ty = expr.result_type(tyenv) if not expr.tag.startswith('Ico_') else expr.type
         addr = self.addr
         if expr.tag == 'Iex_Get':
             return self.get_reg(expr.offset, ty)
         elif expr.tag == 'Iex_RdTmp':
             return self.get_tmp(expr.tmp)
         elif expr.tag == 'Iex_Load':
-            addr_expression = self.handle_expression(expr.addr, path + ['addr'])
+            addr_expression = self.handle_expression(expr.addr, tyenv, path + ['addr'])
             self.access(addr_expression, ACCESS_READ)
             return self.get_mem(addr_expression, ty)
         elif expr.tag == 'Iex_Const' or expr.tag.startswith('Ico_'):
@@ -269,10 +269,10 @@ class BlockState(object):
             values.taints['concrete_root'] = True
             return values
         elif expr.tag == 'Iex_ITE':
-            false_expr = self.handle_expression(expr.iffalse, path + ['iffalse'])
-            truth_expr = self.handle_expression(expr.iftrue, path + ['iftrue'])
+            false_expr = self.handle_expression(expr.iffalse, tyenv, path + ['iffalse'])
+            truth_expr = self.handle_expression(expr.iftrue, tyenv, path + ['iftrue'])
             values = truth_expr if truth_expr.taints['pointer'] else false_expr
-            cond_expr = self.handle_expression(expr.cond, path + ['cond'])
+            cond_expr = self.handle_expression(expr.cond, tyenv, path + ['cond'])
             if not cond_expr.taints['it']:
                 values.taints['concrete'] = false_expr.taints['concrete'] and truth_expr.taints['concrete']
             values.taints['it'] = false_expr.taints['it'] or truth_expr.taints['it']
@@ -280,7 +280,7 @@ class BlockState(object):
         elif expr.tag in ('Iex_Unop','Iex_Binop','Iex_Triop','Iex_Qop'):
             args = []
             for i, sub_expr in enumerate(expr.args):
-                arg = self.handle_expression(sub_expr, path + ['args', i])
+                arg = self.handle_expression(sub_expr, tyenv, path + ['args', i])
                 if expr.op.startswith('Iop_Mul') or expr.op.startswith('Iop_And') \
                         or (i == 0 and expr.op in ROUNDING_IROPS):
                     if arg.taints['concrete_root']:
@@ -318,7 +318,7 @@ class BlockState(object):
         elif expr.tag == 'Iex_CCall':
             values = BiHead.default(ty)
             for i, expr in enumerate(expr.args):
-                arg = self.handle_expression(expr, path + ['args', i])
+                arg = self.handle_expression(expr, tyenv, path + ['args', i])
                 values.taints['it'] = values.taints['it'] or arg.taints['it']
             return values
         elif expr.tag == 'Iex_GetI':
