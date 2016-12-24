@@ -2,6 +2,7 @@ import os, time
 import subprocess
 import nose
 from fidget import Fidget, FidgetDefaultTechnique
+import shellphish_qemu
 
 CTF_WINNER = 'Haha totally pwned'
 ARRAYS_OUTPUT = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ\n'
@@ -119,6 +120,19 @@ qemu_name = {
     'mips64': 'qemu-mips64'
 }
 
+qemu_path = {
+    'x86_64': None,
+    'i386': shellphish_qemu.qemu_path('i386'),
+    'ppc': shellphish_qemu.qemu_path('ppc'),
+    'ppc64': shellphish_qemu.qemu_path('ppc64'),
+    'armel': shellphish_qemu.qemu_path('arm'),
+    'armhf': shellphish_qemu.qemu_path('arm'),
+    'aarch64': shellphish_qemu.qemu_path('aarch64'),
+    'mips': shellphish_qemu.qemu_path('mips'),
+    'mipsel': shellphish_qemu.qemu_path('mipsel'),
+    'mips64': shellphish_qemu.qemu_path('mips64')
+}
+
 ld_name = {
     'x86_64': 'ld-linux-x86-64.so.2',
     'i386': 'ld-linux.so.2',
@@ -136,10 +150,10 @@ mydir = str(os.path.dirname(os.path.realpath(__file__)))
 
 class Process:
     def __init__(self, binary, async, arch, socketserver):
-        if qemu_name[arch] is None:
+        if qemu_path[arch] is None:
             command = [binary]
         else:
-            command = [qemu_name[arch], '-E', 'LD_LIBRARY_PATH=' + os.path.dirname(binary), os.path.join(os.path.dirname(binary), ld_name[arch]), binary]
+            command = [qemu_path[arch], '-E', 'LD_LIBRARY_PATH=' + os.path.dirname(binary), os.path.join(os.path.dirname(binary), ld_name[arch]), binary]
         if socketserver:
             servestdio = str(os.path.join(mydir, 'serve-stdio'))
             command = [servestdio, ' '.join(command), str(socketserver)]
