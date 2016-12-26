@@ -1,2 +1,3 @@
 angr
 ipdb
+shellphish-qemu
