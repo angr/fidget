@@ -148,7 +148,7 @@ class OffsetAnalysis(angr.Analysis):
 
             # Don't try to patch simprocedures
             if project.is_hooked(funcaddr):
-                l.debug("Skipping simprocedure %s", project._sim_procedures[funcaddr][0].__name__)
+                l.debug("Skipping simprocedure %s", project.hooked_by(funcaddr).procedure.__name__)
                 continue
 
             # Don't touch functions not in any segment
