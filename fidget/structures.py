@@ -1,6 +1,6 @@
-from angr import AngrMemoryError
 import claripy
 import pyvex
+from simuvex.s_errors import SimEngineError, SimMemoryError
 
 from .errors import FidgetAnalysisFailure, FidgetUnsupportedError, FidgetError
 from .blockstate import BlockState, ACCESS_MAPPING
@@ -288,7 +288,7 @@ class StructureAnalysis(object):
 
             try:
                 block = self.project.factory.block(blockstate.block_addr, opt_level=1, max_size=400).vex
-            except AngrMemoryError:
+            except (SimEngineError, SimMemoryError):
                 l.error("Couldn't lift block at %#x", blockstate.addr)
                 continue
 

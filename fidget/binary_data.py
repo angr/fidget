@@ -4,7 +4,7 @@ from .errors import FidgetUnsupportedError, \
                     ValueNotFoundError, \
                     FuzzingAssertionFailure
 from pyvex import PyVEXError
-from angr import AngrTranslationError
+from simuvex.s_errors import SimEngineError
 import claripy
 from claripy import BVV
 
@@ -699,7 +699,7 @@ class BinaryData(object):
                         insn_bytes=self._get_patched_instruction(challenger),
                         opt_level=1
                     ).vex
-            except (PyVEXError, AngrTranslationError):
+            except (PyVEXError, SimEngineError):
                 return False
             okay = (basic, unsign_int(challenger, size))
             try:
