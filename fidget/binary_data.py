@@ -696,7 +696,7 @@ class BinaryData(object):
             try:
                 newblock = self._project.factory.block(
                         self.addr,
-                        insn_bytes=self._get_patched_instruction(challenger),
+                        byte_string=self._get_patched_instruction(challenger),
                         opt_level=1
                     ).vex
             except (PyVEXError, SimEngineError):
