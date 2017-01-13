@@ -190,7 +190,7 @@ class OffsetAnalysis(angr.Analysis):
         for node in func.nodes:
             if type(node) is not angr.knowledge.codenode.BlockNode:
                 continue
-            block = self.project.factory.block(node.addr, max_size=node.size)
+            block = self.project.factory.block(node.addr, size=node.size)
             for idx, stmt in enumerate(block.vex.statements):
                 if stmt.tag == 'Ist_IMark':
                     mark_addr = stmt.addr

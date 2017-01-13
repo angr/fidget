@@ -83,7 +83,7 @@ class BinaryData(object):
         self._arm64 = project.arch.name == 'AARCH64'
 
         if not block:
-            block = project.factory.block(addr, num_inst=1, max_size=400, opt_level=1)
+            block = project.factory.block(addr, num_inst=1, opt_level=1)
         self._block = block
         self._insvex = block.vex
         self._insbytes = self._block.bytes

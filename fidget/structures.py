@@ -287,7 +287,7 @@ class StructureAnalysis(object):
                 continue
 
             try:
-                block = self.project.factory.block(blockstate.block_addr, opt_level=1, max_size=400).vex
+                block = self.project.factory.block(blockstate.block_addr, opt_level=1).vex
             except (SimEngineError, SimMemoryError):
                 l.error("Couldn't lift block at %#x", blockstate.addr)
                 continue
@@ -308,7 +308,7 @@ class StructureAnalysis(object):
                     l.warning("\tThis function jumps into another function (%#x). Abort.", addr)
                     raise FidgetAnalysisFailure
                 cache.add(addr)
-                insnblock = self.project.factory.block(addr, num_inst=1, max_size=400, opt_level=1).vex
+                insnblock = self.project.factory.block(addr, num_inst=1, opt_level=1).vex
                 blockstate.handle_irsb(insnblock)
 
             if block.jumpkind == 'Ijk_Call' and self.project.arch.call_pushes_ret:
