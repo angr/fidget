@@ -4,7 +4,7 @@ from .errors import FidgetUnsupportedError, \
                     ValueNotFoundError, \
                     FuzzingAssertionFailure
 from pyvex import PyVEXError
-from angr import AngrTranslationError
+from simuvex.s_errors import SimEngineError
 import claripy
 from claripy import BVV
 
@@ -83,7 +83,7 @@ class BinaryData(object):
         self._arm64 = project.arch.name == 'AARCH64'
 
         if not block:
-            block = project.factory.block(addr, num_inst=1, max_size=400, opt_level=1)
+            block = project.factory.block(addr, num_inst=1, opt_level=1)
         self._block = block
         self._insvex = block.vex
         self._insbytes = self._block.bytes
@@ -696,10 +696,10 @@ class BinaryData(object):
             try:
                 newblock = self._project.factory.block(
                         self.addr,
-                        insn_bytes=self._get_patched_instruction(challenger),
+                        byte_string=self._get_patched_instruction(challenger),
                         opt_level=1
                     ).vex
-            except (PyVEXError, AngrTranslationError):
+            except (PyVEXError, SimEngineError):
                 return False
             okay = (basic, unsign_int(challenger, size))
             try:

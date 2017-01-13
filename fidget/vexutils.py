@@ -19,7 +19,7 @@ def equals(item1, item2):
     while len(queue) > 0:
         a, b = queue.pop()
         yield (a.tag, b.tag)
-        if a.tag == 'Ist_NoOp':
+        if a.tag in ('Ist_NoOp', 'Ist_AbiHint'):
             pass
         elif a.tag == 'Ist_IMark':
             yield (a.len, b.len)

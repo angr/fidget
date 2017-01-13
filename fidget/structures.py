@@ -1,6 +1,6 @@
-from angr import AngrMemoryError
 import claripy
 import pyvex
+from simuvex.s_errors import SimEngineError, SimMemoryError
 
 from .errors import FidgetAnalysisFailure, FidgetUnsupportedError, FidgetError
 from .blockstate import BlockState, ACCESS_MAPPING
@@ -238,7 +238,7 @@ class StructureAnalysis(object):
 
             # Don't try to patch simprocedures
             if project.is_hooked(funcaddr):
-                l.debug("Skipping simprocedure %s", project._sim_procedures[funcaddr][0].__name__)
+                l.debug("Skipping simprocedure %s", project.hooked_by(funcaddr).procedure.__name__)
                 continue
 
             # Don't touch functions not in any segment
@@ -287,8 +287,8 @@ class StructureAnalysis(object):
                 continue
 
             try:
-                block = self.project.factory.block(blockstate.block_addr, opt_level=1, max_size=400).vex
-            except AngrMemoryError:
+                block = self.project.factory.block(blockstate.block_addr, opt_level=1).vex
+            except (SimEngineError, SimMemoryError):
                 l.error("Couldn't lift block at %#x", blockstate.addr)
                 continue
 
@@ -308,7 +308,7 @@ class StructureAnalysis(object):
                     l.warning("\tThis function jumps into another function (%#x). Abort.", addr)
                     raise FidgetAnalysisFailure
                 cache.add(addr)
-                insnblock = self.project.factory.block(addr, num_inst=1, max_size=400, opt_level=1).vex
+                insnblock = self.project.factory.block(addr, num_inst=1, opt_level=1).vex
                 blockstate.handle_irsb(insnblock)
 
             if block.jumpkind == 'Ijk_Call' and self.project.arch.call_pushes_ret:

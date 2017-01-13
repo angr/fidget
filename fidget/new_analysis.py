@@ -148,7 +148,7 @@ class OffsetAnalysis(angr.Analysis):
 
             # Don't try to patch simprocedures
             if project.is_hooked(funcaddr):
-                l.debug("Skipping simprocedure %s", project._sim_procedures[funcaddr][0].__name__)
+                l.debug("Skipping simprocedure %s", project.hooked_by(funcaddr).procedure.__name__)
                 continue
 
             # Don't touch functions not in any segment
@@ -190,7 +190,7 @@ class OffsetAnalysis(angr.Analysis):
         for node in func.nodes:
             if type(node) is not angr.knowledge.codenode.BlockNode:
                 continue
-            block = self.project.factory.block(node.addr, max_size=node.size)
+            block = self.project.factory.block(node.addr, size=node.size)
             for idx, stmt in enumerate(block.vex.statements):
                 if stmt.tag == 'Ist_IMark':
                     mark_addr = stmt.addr
