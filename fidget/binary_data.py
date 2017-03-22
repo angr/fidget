@@ -84,8 +84,8 @@ class BinaryData(object):
 
         if not block:
             block = project.factory.block(addr, num_inst=1, opt_level=1)
-        self._block = block
-        self._insvex = block.vex
+        self._block = project.factory.block(addr, byte_string=block.bytes, opt_level=1)
+        self._insvex = self._block.vex
         self._insbytes = self._block.bytes
         self._inslen = len(self._insbytes)
 

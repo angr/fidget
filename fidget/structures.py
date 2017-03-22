@@ -293,22 +293,20 @@ class StructureAnalysis(object):
                 continue
 
             l.debug("Analyzing block %#x", blockstate.addr)
-            mark_addrs = [
-                            s.addr + s.delta
-                            for s in block.statements
-                            if isinstance(s, pyvex.IRStmt.IMark)
-                         ]
+            marks = [ s for s in block.statements if isinstance(s, pyvex.IRStmt.IMark) ]
             if block.jumpkind == 'Ijk_NoDecode':
                 l.error("Block at %#x ends in NoDecode", blockstate.addr)
-                mark_addrs.pop()
+                marks.pop()
 
             headcache.add(blockstate.addr)
-            for addr in mark_addrs:
+            for mark in marks:
+                addr = mark.addr + mark.delta
                 if addr != funcaddr and addr in self.project.kb.functions:
                     l.warning("\tThis function jumps into another function (%#x). Abort.", addr)
                     raise FidgetAnalysisFailure
                 cache.add(addr)
-                insnblock = self.project.factory.block(addr, num_inst=1, opt_level=1).vex
+                insnbytes = ''.join(self.project.loader.memory.read_bytes(mark.addr, mark.len))
+                insnblock = self.project.factory.block(mark.addr, num_inst=1, opt_level=1, thumb=mark.delta == 1, byte_string=insnbytes).vex
                 blockstate.handle_irsb(insnblock)
 
             if block.jumpkind == 'Ijk_Call' and self.project.arch.call_pushes_ret:
@@ -360,4 +358,3 @@ class StructureAnalysis(object):
                     raise FidgetUnsupportedError('You forgot to update the tag list, jerkface!')
 
         return struct
-
