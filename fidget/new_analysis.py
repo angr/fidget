@@ -1,6 +1,7 @@
 import angr
-import simuvex
-from simuvex import s_type_backend, s_type, o
+from angr.type_backend import TypeBackend, TypeAnnotation
+from angr import sim_type
+from angr import sim_options as o
 import claripy
 #from identifier import Identifier
 import logging
@@ -37,7 +38,7 @@ class Access(object):
     def __repr__(self):
         return '<Access: %s %d %#x>' % ('write' if self.is_write else 'read', self.size, self.mark_addr)
 
-class SimStructAbstract(s_type.SimType):
+class SimStructAbstract(sim_type.SimType):
     """
     This is an abstract struct SimType that tracks all the accesses to the individual offsets
 
@@ -93,7 +94,7 @@ class OffsetAnalysis(angr.Analysis):
         #self.cfg = self.project.analyses.CFGAccurate(keep_state=True, enable_symbolic_back_traversal=True, normalize=True)
         self.cfg = self.project.analyses.CFGFast(collect_data_references=True, normalize=True)
         self.accesses = {}
-        self.ty_backend = s_type_backend.TypeBackend()
+        self.ty_backend = TypeBackend()
         self.global_struct = SimStructAbstract(label='global')
         #self.identer = Identifier(self.project, self.cfg)
         #self.ident_result = list(self.identer.run())
@@ -107,9 +108,9 @@ class OffsetAnalysis(angr.Analysis):
         self.syscall_mapping = self.project._simos.syscall_table
 
         self.initial_state = self.project.factory.blank_state(remove_options={o.SIMPLIFY_MEMORY_WRITES, o.SIMPLIFY_REGISTER_WRITES}, add_options={o.UNSUPPORTED_BYPASS_ZERO_DEFAULT, o.BYPASS_UNSUPPORTED_IROP, o.BYPASS_UNSUPPORTED_IRCCALL, o.AVOID_MULTIVALUED_READS, o.AVOID_MULTIVALUED_WRITES})
-        self.initial_state.inspect.b('mem_read', when=simuvex.BP_AFTER, action=self._memory_access)
-        self.initial_state.inspect.b('mem_write', when=simuvex.BP_AFTER, action=self._memory_access)
-        self.initial_state.inspect.b('exit', when=simuvex.BP_BEFORE, action=self._exit_taken)
+        self.initial_state.inspect.b('mem_read', when=angr.BP_AFTER, action=self._memory_access)
+        self.initial_state.inspect.b('mem_write', when=angr.BP_AFTER, action=self._memory_access)
+        self.initial_state.inspect.b('exit', when=angr.BP_BEFORE, action=self._exit_taken)
 
         for func in self.real_functions(self.cfg):
             l.info("Working on %s", func.name)
@@ -117,8 +118,8 @@ class OffsetAnalysis(angr.Analysis):
 
     def pointer_to_abstruct(self, abstruct):
         return claripy.BVV(abstruct.base, self.project.arch.bits).annotate(
-                s_type_backend.TypeAnnotation(
-                    s_type.SimTypePointer(abstruct, label=[], offset=claripy.BVV(0, self.project.arch.bits))))
+                TypeAnnotation(
+                    sim_type.SimTypePointer(abstruct, label=[], offset=claripy.BVV(0, self.project.arch.bits))))
 
     @staticmethod
     def real_functions(cfg):
@@ -216,8 +217,8 @@ class OffsetAnalysis(angr.Analysis):
             if self.project.arch.registers[reg][0] == self.project.arch.registers['sp'][0]:
                 continue
             val = claripy.BVS('reg_%s'%reg, self.project.arch.bits)
-            val = val.annotate(s_type_backend.TypeAnnotation(
-                s_type.SimTypeTop(label=[ValueSource('register', reg)])
+            val = val.annotate(TypeAnnotation(
+                sim_type.SimTypeTop(label=[ValueSource('register', reg)])
             ))
             self.function_initial_regs[func.addr][reg] = val
 
@@ -270,7 +271,7 @@ class OffsetAnalysis(angr.Analysis):
                     one, two = data
                     one_ty = self.ty_backend.convert(one).ty
                     two_ty = self.ty_backend.convert(two).ty
-                    if type(one_ty) is s_type.SimTypePointer and type(two_ty) is s_type.SimTypePointer:
+                    if type(one_ty) is sim_type.SimTypePointer and type(two_ty) is sim_type.SimTypePointer:
                         import ipdb; ipdb.set_trace()
                         print 'uh. gotta do a weird thing here!'
                     else:
@@ -300,7 +301,7 @@ class OffsetAnalysis(angr.Analysis):
             data = state.inspect.mem_read_expr
 
         ptr_ty = self.ty_backend.convert(pointer).ty
-        if type(ptr_ty) is s_type.SimTypePointer:
+        if type(ptr_ty) is sim_type.SimTypePointer:
             #l.info("...got em!")
             offset = ptr_ty.offset
             subty = ptr_ty.pts_to
@@ -310,8 +311,8 @@ class OffsetAnalysis(angr.Analysis):
 
                 if data.op == 'BVS' and data.args[0].startswith('mem_') and len(data.annotations) == 0:
                     # this is a fresh read! we need to mark its source.
-                    newty = s_type.SimTypeTop(label=[ValueSource(subty, offset)])
-                    data = data.annotate(s_type_backend.TypeAnnotation(newty))
+                    newty = sim_type.SimTypeTop(label=[ValueSource(subty, offset)])
+                    data = data.annotate(TypeAnnotation(newty))
                     state.memory.store(pointer, data, inspect=False, endness=state.arch.memory_endness)
             else:
                 l.warning('...pointer is to %s?', repr(subty))
@@ -400,7 +401,7 @@ class OffsetAnalysis(angr.Analysis):
                         if target not in self.function_return_vals:
                             self.function_return_vals[target] = state.regs.eax
                 else:
-                    state.regs.eax = claripy.BVS('retval', 32).annotate(s_type_backend.TypeAnnotation(s_type.SimTypeTop(label=[ValueSource('return', all_targets)])))
+                    state.regs.eax = claripy.BVS('retval', 32).annotate(TypeAnnotation(sim_type.SimTypeTop(label=[ValueSource('return', all_targets)])))
 
     def _runtime_unify(self, state, one, two, stack_frame=False, overwrite=True):
         """
@@ -417,7 +418,7 @@ class OffsetAnalysis(angr.Analysis):
         two_ty = self.ty_backend.convert(two).ty
 
         # if both of them are pointers!!! this gets very tricky
-        if type(one_ty) is type(two_ty) is s_type.SimTypePointer:
+        if type(one_ty) is type(two_ty) is sim_type.SimTypePointer:
             one_subty = one_ty.pts_to
             two_subty = two_ty.pts_to
             one_offset = one_ty.offset
@@ -464,11 +465,11 @@ class OffsetAnalysis(angr.Analysis):
                         # (since we disabled inspect, this might happen)
                         # we should manually give it a source since this is something we know
                         one_value_ty = self.ty_backend.convert(one_value).ty
-                        if type(one_value_ty) is not s_type.SimTypePointer and \
+                        if type(one_value_ty) is not sim_type.SimTypePointer and \
                                 len(one_value_ty.label) == 0:
                             one_value = one_value.annotate(
-                                    s_type_backend.TypeAnnotation(
-                                        s_type.SimTypeTop(label=[ValueSource(two_subty, offset)])))
+                                    TypeAnnotation(
+                                        sim_type.SimTypeTop(label=[ValueSource(two_subty, offset)])))
 
                         self._runtime_unify(state, one_value, two_value)
 
@@ -482,7 +483,7 @@ class OffsetAnalysis(angr.Analysis):
         # when only one of them is a pointer!
         # if a source is available we should toss it to SOURCE, she'll just drop the other in!
         # if a source is not available, wait. eventually one will be available :)
-        elif type(two_ty) is s_type.SimTypePointer:
+        elif type(two_ty) is sim_type.SimTypePointer:
             if len(one_ty.label) > 0:
                 if len(one_ty.label) > 1:
                     import ipdb; ipdb.set_trace()
@@ -493,7 +494,7 @@ class OffsetAnalysis(angr.Analysis):
         # if one overwrites two, then we can't mark two as a pointer just because 1 is a pointer.
         # otherwise, this is the same as the previous case I guess?
         # I'm not sure what good this does
-        elif type(one_ty) is s_type.SimTypePointer:
+        elif type(one_ty) is sim_type.SimTypePointer:
             import ipdb; ipdb.set_trace()
             if not overwrite:
                 if len(two_ty.label) > 0:

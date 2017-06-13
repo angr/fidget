@@ -52,22 +52,22 @@ def usage(verbose):
 Usage: fidget [option | filename] [option | filename] ...
 
 Options:
-    -h, --help              View this usage information and exit
-    -vh                     View additional usage information
-    -v, --verbose           More output
-    -q, --quiet             Less output
-    -o, --output [file]     Output patched binary to file (default <input>.out)
-    --in-place              Changed default output file to <input> instead of <input>.out
-    -w [function]           Whitelist a function name
-    -b [function]           Blacklist a function name
-    --safe                  Make conservative modifications
-    --huge                  Make stack frames gigantic
-    --debug                 Pop an ipdb shell at the main function, break on exceptions
-    --debugangr             Pop an ipdb shell right before calling into angr
-    --cache                 Use a pickled Project and CFG from a file
+    -h, --help                View this usage information and exit
+    -vh                        View additional usage information
+    -v, --verbose            More output
+    -q, --quiet                Less output
+    -o, --output [file]        Output patched binary to file (default <input>.out)
+    --in-place                Changed default output file to <input> instead of <input>.out
+    -w [function]            Whitelist a function name
+    -b [function]            Blacklist a function name
+    --safe                    Make conservative modifications
+    --huge                    Make stack frames gigantic
+    --debug                    Pop an ipdb shell at the main function, break on exceptions
+    --debugangr                Pop an ipdb shell right before calling into angr
+    --cache                    Use a pickled Project and CFG from a file
     -l, --log [tag] [level] Change logging levels
     --logfile [file]        Log output to a file
-    -e, --exit-on-error     Exits at first error instead of trying more files"""
+    -e, --exit-on-error        Exits at first error instead of trying more files"""
 
     if verbose:
         print """
@@ -90,7 +90,7 @@ Verbosity and Logging:
     Level 3 prints out the above and each IR instruction as it is parsed
     
     With the -l and --log flags, you can change the kind of output that is logged.
-    Pass it a tag like "angr", "claripy", or "simuvex" and a logging level, and 
+    Pass it a tag like "angr", or "claripy" and a logging level, and 
     the results of the logging module for these libraries will be outputted at the
     given verbosity level.
 
@@ -100,7 +100,6 @@ Verbosity and Logging:
     The defaults are:
         --log fidget INFO
         --log angr WARNING
-        --log simuvex WARNING
         --log cle WARNING
         --log claripy ERROR
 
@@ -149,14 +148,12 @@ class CanonColors:
     n_info = 'INFO: '
     n_debug = 'DEBUG: '
 
-    c_simuvex = '\033[1;34m'
     c_angr = '\033[1;31m'
     c_fidget = '\033[1;33m'
     c_cle = '\033[1;32m'
     c_claripy = '\033[1;32m'
 
     colored_names = {
-        'simuvex': c_simuvex,
         'angr': c_angr,
         'fidget': c_fidget,
         'cle': c_cle,
@@ -207,7 +204,7 @@ def main():
     if len(sys.argv) < 2:
         usage(False)
     else:
-        options = {"logging": {"fidget": 20, "angr": 'WARNING', "simuvex": 'WARNING', "cle": 'WARNING', "claripy": 'ERROR'}, "logfile": None, "safe": False, "largemode": False, "infiles": [], "outfiles": [], "whitelist": [], "blacklist": [], "debug": False, 'debugangr': False, "exit-on-error": False, "inplace": False, "cache": False}
+        options = {"logging": {"fidget": 20, "angr": 'WARNING', "cle": 'WARNING', "claripy": 'ERROR'}, "logfile": None, "safe": False, "largemode": False, "infiles": [], "outfiles": [], "whitelist": [], "blacklist": [], "debug": False, 'debugangr': False, "exit-on-error": False, "inplace": False, "cache": False}
         argv = iter(sys.argv)
         next(argv)
         for arg in argv:
@@ -238,7 +235,7 @@ def main():
         logging.root.addHandler(handler)
 
         # very specific import position to dance around angr's bullshit auto-logging-levels
-        from fidget import patch_file       # pylint: disable=import-self
+        from fidget import patch_file        # pylint: disable=import-self
         from fidget.techniques import FidgetDefaultTechnique
 
         for tag, lvl in logopt.iteritems():
@@ -269,7 +266,7 @@ def main():
                 if debug:
                     ipdb.post_mortem(sys.exc_info()[2])
                 sys.exit(1)
-            except Exception:              # pylint: disable=broad-except
+            except Exception:               # pylint: disable=broad-except
                 l.exception("Unhandled Exception in Fidget!")
                 if debug:
                     ipdb.post_mortem(sys.exc_info()[2])

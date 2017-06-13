@@ -1,6 +1,6 @@
 import claripy
 import pyvex
-from simuvex.s_errors import SimEngineError, SimMemoryError
+from angr.errors import SimEngineError, SimMemoryError
 
 from .errors import FidgetAnalysisFailure, FidgetUnsupportedError, FidgetError
 from .blockstate import BlockState, ACCESS_MAPPING

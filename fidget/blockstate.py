@@ -1,5 +1,8 @@
 import claripy
-from simuvex import operations, SimOperationError, SimState, s_options as sim_options
+from angr.engines.vex import operations
+from angr.errors import SimOperationError
+from angr import SimState
+from angr import sim_options
 
 from .binary_data import PendingBinaryData
 from .errors import FidgetUnsupportedError, FidgetAnalysisFailure

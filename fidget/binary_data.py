@@ -4,7 +4,7 @@ from .errors import FidgetUnsupportedError, \
                     ValueNotFoundError, \
                     FuzzingAssertionFailure
 from pyvex import PyVEXError
-from simuvex.s_errors import SimEngineError
+from angr.errors import SimEngineError
 import claripy
 from claripy import BVV
 
