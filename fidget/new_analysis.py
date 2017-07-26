@@ -153,19 +153,19 @@ class OffsetAnalysis(angr.Analysis):
                 continue
 
             # Don't touch functions not in any segment
-            if project.loader.main_bin.find_segment_containing(funcaddr) is None:
+            if project.loader.main_object.find_segment_containing(funcaddr) is None:
                 l.debug('Skipping function %s not mapped', func.name)
                 continue
 
             # If the text section exists, only patch functions in it
-            if '.text' not in project.loader.main_bin.sections_map:
-                sec = project.loader.main_bin.find_section_containing(funcaddr)
+            if '.text' not in project.loader.main_object.sections_map:
+                sec = project.loader.main_object.find_section_containing(funcaddr)
                 if sec is None or sec.name != '.text':
                     l.debug('Skipping function %s not in .text', func.name)
                     continue
 
             # Don't patch functions in the PLT
-            if funcaddr in project.loader.main_bin.plt.values():
+            if funcaddr in project.loader.main_object.plt.values():
                 l.debug('Skipping function %s in PLT', func.name)
                 continue
 

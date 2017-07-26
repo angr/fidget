@@ -170,7 +170,7 @@ class BinaryData(object):
         l.debug('Patching address %#x with value %#x', self.addr, value)
         if patch_bytes == self._insbytes:
             return []
-        physaddr = self._project.loader.main_bin.addr_to_offset(self.addr)
+        physaddr = self._project.loader.main_object.addr_to_offset(self.addr)
         if self._armthumb: physaddr -= 1
         self._already_patched = True
         if self.patch_bytes_size is None:
