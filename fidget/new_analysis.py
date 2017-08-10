@@ -319,7 +319,7 @@ class OffsetAnalysis(angr.Analysis):
         elif not pointer.symbolic:
             #l.info("...global data!")
             self.global_struct.offsets[pointer.cache_key].add(cur_access)
-            cur_access.source = ValueSource(self.global_struct, state.se.any_int(pointer))
+            cur_access.source = ValueSource(self.global_struct, state.se.eval(pointer))
         else:
             #l.info("...don't got em!")
             if ptr_ty.label is not None and len(ptr_ty.label) > 0:
@@ -346,7 +346,7 @@ class OffsetAnalysis(angr.Analysis):
                 import ipdb; ipdb.set_trace()
                 print 'shit!! lmao'
         else:
-            all_targets = (state.se.any_int(target),)
+            all_targets = (state.se.eval(target),)
 
         if jk == 'Ijk_Call' or jk.startswith('Ijk_Sys'):
 
