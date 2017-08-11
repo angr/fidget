@@ -28,8 +28,8 @@ class BiHead(claripy.Bits):
 
     def __getattribute__(self, k):
         if k == 'op':
-            return 'I'      # claim to be an identity AST
-        if k in ('cleanval', 'dirtyval', 'length', 'taints', '_hash', '__init__', 'make_uuid', 'to_bv', 'to_fp_raw') or (k in dir(BiHead) and k not in dir(claripy.Bits)):
+            return 'BVV'      # claim to be a simple value
+        if k in ('cleanval', 'dirtyval', 'length', 'taints', '_hash', '__init__', 'make_uuid', 'raw_to_bv', 'raw_to_fp', 'to_bv') or (k in dir(BiHead) and k not in dir(claripy.Bits)):
             return object.__getattribute__(self, k)
         if hasattr(self.cleanval, k):
             cleanres, dirtyres = getattr(self.cleanval, k), getattr(self.dirtyval, k)
@@ -68,7 +68,7 @@ class BiHead(claripy.Bits):
         out.taints['it'] = self.taints['it']
         return out
 
-    def to_bv(self):
+    def raw_to_bv(self):
         if isinstance(self.cleanval, claripy.ast.BV):
             return self
         out = BiHead(self.cleanval.to_bv(), self.cleanval.to_bv())
@@ -76,8 +76,26 @@ class BiHead(claripy.Bits):
         out.taints['concrete'] = self.taints['concrete']
         return out
 
-    def to_fp_raw(self):
-        out = BiHead(self.cleanval.to_fp_raw(), self.cleanval.to_fp_raw())
+    def raw_to_fp(self):
+        if isinstance(self.cleanval, claripy.ast.FP):
+            return self
+        out = BiHead(self.cleanval.raw_to_fp(), self.cleanval.raw_to_fp())
+        out.taints['deps'] = self.taints['deps']
+        out.taints['concrete'] = self.taints['concrete']
+        return out
+
+    def val_to_bv(self, *args, **kwargs):
+        if isinstance(self.cleanval, claripy.ast.BV):
+            return self
+        out = BiHead(self.cleanval.val_to_bv(*args, **kwargs), self.cleanval.val_to_bv(*args, **kwargs))
+        out.taints['deps'] = self.taints['deps']
+        out.taints['concrete'] = self.taints['concrete']
+        return out
+
+    def val_to_fp(self, *args, **kwargs):
+        if isinstance(self.cleanval, claripy.ast.FP):
+            return self
+        out = BiHead(self.cleanval.val_to_fp(*args, **kwargs), self.cleanval.val_to_fp(*args, **kwargs))
         out.taints['deps'] = self.taints['deps']
         out.taints['concrete'] = self.taints['concrete']
         return out
