@@ -95,7 +95,7 @@ class BlockState(object):
         if self.state is None:
             self.state = SimState(arch=project.arch,
                     mode='symbolic',
-                    special_memory_filler=lambda name, bits: BiHead(claripy.BVV(0, bits), claripy.BVV(0, bits)),
+                    special_memory_filler=lambda name, bits, _state: BiHead(claripy.BVV(0, bits), claripy.BVV(0, bits)),
                     add_options={sim_options.ABSTRACT_MEMORY, sim_options.SPECIAL_MEMORY_FILL}
                 )
             self.state.scratch.ins_addr = 0
