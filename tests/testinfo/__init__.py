@@ -4,10 +4,10 @@ import nose
 from fidget import Fidget, FidgetDefaultTechnique
 import shellphish_qemu
 
-CTF_WINNER = 'Haha totally pwned'
-ARRAYS_OUTPUT = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ\n'
-LOOPS_OUTPUT = '0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 \n'
-DIVISION_OUTPUT = '''3/4 = 0
+CTF_WINNER = b'Haha totally pwned'
+ARRAYS_OUTPUT = b'ABCDEFGHIJKLMNOPQRSTUVWXYZ\n'
+LOOPS_OUTPUT = b'0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 \n'
+DIVISION_OUTPUT = b'''3/4 = 0
 9/2 = 4
 4/2 = 2
 10/0 = '''
@@ -155,8 +155,7 @@ class Process:
         else:
             command = [qemu_path[arch], '-E', 'LD_LIBRARY_PATH=' + os.path.dirname(binary), os.path.join(os.path.dirname(binary), ld_name[arch]), binary]
         if socketserver:
-            servestdio = str(os.path.join(mydir, 'serve-stdio'))
-            command = [servestdio, ' '.join(command), str(socketserver)]
+            command = ['serve-stdio', str(socketserver), ' '.join(command)]
         kwargs = {'cwd': mydir}
         if not async:
             kwargs['stdout'] = subprocess.PIPE

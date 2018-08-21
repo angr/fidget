@@ -134,10 +134,6 @@ class BiHead(claripy.Bits):
 
     @staticmethod
     def make_result(cleanres, dirtyres):
-        if isinstance(cleanres, long):
-            cleanres = int(cleanres)
-        if isinstance(dirtyres, long):
-            dirtyres = int(dirtyres)
         assert type(cleanres) == type(dirtyres)
         if isinstance(cleanres, claripy.Bits):
             return BiHead(cleanres, dirtyres)

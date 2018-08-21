@@ -249,7 +249,7 @@ class OffsetAnalysis(angr.Analysis):
                 for mergable in pg.not_unique:
                     if mergable.addr not in blanket.merge_point_states:
                         import ipdb; ipdb.set_trace()
-                        print 'the fuck is this'
+                        print('the fuck is this')
                     orig_state = blanket.merge_point_states[mergable.addr]
                     for reg in self.project.arch.default_symbolic_registers:
                         self._runtime_unify(state, mergable.state.registers.load(reg), orig_state.registers.load(reg), stack_frame=reg == 'esp', overwrite=False)
@@ -273,10 +273,10 @@ class OffsetAnalysis(angr.Analysis):
                     two_ty = self.ty_backend.convert(two).ty
                     if type(one_ty) is sim_type.SimTypePointer and type(two_ty) is sim_type.SimTypePointer:
                         import ipdb; ipdb.set_trace()
-                        print 'uh. gotta do a weird thing here!'
+                        print('uh. gotta do a weird thing here!')
                     else:
                         import ipdb; ipdb.set_trace()
-                        print 'what the shit is this'
+                        print('what the shit is this')
                 else:
                     raise Exception("you forgot to update the tag list, jerkface! (%s)" % tag)
 
@@ -325,7 +325,7 @@ class OffsetAnalysis(angr.Analysis):
             if ptr_ty.label is not None and len(ptr_ty.label) > 0:
                 if len(ptr_ty.label) > 1:
                     import ipdb; ipdb.set_trace()
-                    print 'not sure how this case can arise but it needs special handling if it does'
+                    print('not sure how this case can arise but it needs special handling if it does')
                 #l.info("...but we have a source!")
                 self.pass_results.append(('SOURCE', ptr_ty.label[0]))
         if cur_access.is_write:
@@ -344,7 +344,7 @@ class OffsetAnalysis(angr.Analysis):
             all_targets = tuple(state.se.any_n_int(target, 257))
             if len(all_targets) > 256:
                 import ipdb; ipdb.set_trace()
-                print 'shit!! lmao'
+                print('shit!! lmao')
         else:
             all_targets = (state.se.eval(target),)
 
@@ -426,15 +426,15 @@ class OffsetAnalysis(angr.Analysis):
 
             if one_offset.symbolic or two_offset.symbolic:
                 import ipdb; ipdb.set_trace()
-                print 'yikes! (jesus christ)'
+                print('yikes! (jesus christ)')
 
             if one_subty is two_subty:
                 if one_offset is not two_subty:
                     import ipdb; ipdb.set_trace()
-                    print 'yikes? (arrays maybe. recursion probably)'
+                    print('yikes? (arrays maybe. recursion probably)')
                 else:
                     import ipdb; ipdb.set_trace()
-                    print 'yikes. (no object identity but yes equality)'
+                    print('yikes. (no object identity but yes equality)')
 
             # these are two different structures that we might have to unify.
             # possible cases:
@@ -478,7 +478,7 @@ class OffsetAnalysis(angr.Analysis):
                     # look through the structs and check offset by offset
                     # do we want to check in the initial state or elsewhere?
                     # think we should check in the current state. everything from the initial state wil be there still?
-                    print 'okay??'
+                    print('okay??')
 
         # when only one of them is a pointer!
         # if a source is available we should toss it to SOURCE, she'll just drop the other in!
@@ -487,7 +487,7 @@ class OffsetAnalysis(angr.Analysis):
             if len(one_ty.label) > 0:
                 if len(one_ty.label) > 1:
                     import ipdb; ipdb.set_trace()
-                    print '????????????'
+                    print('????????????')
                 self.pass_results.append(('SOURCE', one_ty.label[0]))
 
         # this is where overwrite semantics comes into play.
@@ -500,7 +500,7 @@ class OffsetAnalysis(angr.Analysis):
                 if len(two_ty.label) > 0:
                     if len(two_ty.label) > 1:
                         import ipdb; ipdb.set_trace()
-                        print '????????????'
+                        print('????????????')
                     self.pass_results.append(('SOURCE', two_ty.label[0]))
 
         # If neither of them are pointers bail out. this is not a general type inference :)
