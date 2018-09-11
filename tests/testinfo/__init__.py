@@ -85,7 +85,7 @@ def generic_test(binary, expected):
 
 
 def boot(binary):
-    async = 'ctf_' in binary
+    asynchronous = 'ctf_' in binary
 
     arch = ''
 
@@ -105,7 +105,7 @@ def boot(binary):
     elif 'ctf_aarch64' in binary:
         socketserver = 4464
 
-    return Process(binary=binary, async=async, arch=arch, socketserver=socketserver)
+    return Process(binary=binary, asynchronous=asynchronous, arch=arch, socketserver=socketserver)
 
 qemu_name = {
     'x86_64': None,
@@ -149,19 +149,22 @@ ld_name = {
 mydir = str(os.path.dirname(os.path.realpath(__file__)))
 
 class Process:
-    def __init__(self, binary, async, arch, socketserver):
-        if qemu_path[arch] is None:
-            command = [binary]
-        else:
-            command = [qemu_path[arch], '-E', 'LD_LIBRARY_PATH=' + os.path.dirname(binary), os.path.join(os.path.dirname(binary), ld_name[arch]), binary]
+    def __init__(self, binary, asynchronous, arch, socketserver):
+        command = [os.path.join(os.path.dirname(binary), ld_name[arch]),
+                '--library-path',
+                os.path.dirname(binary),
+                binary]
+        if qemu_path[arch] is not None:
+            command = [qemu_path[arch]] + command
+
         if socketserver:
-            command = ['serve-stdio', str(socketserver), ' '.join(command)]
+            command = ['serve-stdio', str(socketserver)] + command
         kwargs = {'cwd': mydir}
-        if not async:
+        if not asynchronous:
             kwargs['stdout'] = subprocess.PIPE
         #print command
         self.process = subprocess.Popen(command, **kwargs)
-        if async:
+        if asynchronous:
             time.sleep(0.5)
 
     def output(self):
