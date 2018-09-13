@@ -305,7 +305,7 @@ class StructureAnalysis(object):
                     l.warning("\tThis function jumps into another function (%#x). Abort.", addr)
                     raise FidgetAnalysisFailure
                 cache.add(addr)
-                insnbytes = bytes(self.project.loader.memory.read_bytes(mark.addr, mark.len))
+                insnbytes = self.project.loader.memory.load(mark.addr, mark.len)
                 insnblock = self.project.factory.block(mark.addr, num_inst=1, opt_level=1, thumb=mark.delta == 1, byte_string=insnbytes).vex
                 blockstate.handle_irsb(insnblock)
 
