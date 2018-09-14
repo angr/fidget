@@ -129,7 +129,7 @@ class BlockState(object):
         if isinstance(ty, int):
             ty = 'Ity_I%d' % ty
         size = vexutils.extract_int(ty)
-        addr_vs = self.state.se.VS(bits=self.state.arch.bits, region=addr.taints['pointer'] if addr.taints['pointer'] else 'global', val=addr.as_unsigned)
+        addr_vs = self.state.solver.VS(bits=self.state.arch.bits, region=addr.taints['pointer'] if addr.taints['pointer'] else 'global', val=addr.as_unsigned)
         val = self.state.memory.load(addr_vs, size//8, endness=self.state.arch.memory_endness)
         if ty.startswith('Ity_F'):
             val = val.raw_to_fp()
@@ -138,7 +138,7 @@ class BlockState(object):
     def put_mem(self, addr, val):
         if not addr.taints['pointer']:
             return      # don't store anything to memory that's not an accounted-for region
-        addr_vs = self.state.se.VS(bits=self.state.arch.bits, region=addr.taints['pointer'], val=addr.as_unsigned)
+        addr_vs = self.state.solver.VS(bits=self.state.arch.bits, region=addr.taints['pointer'], val=addr.as_unsigned)
         self.state.scratch.ins_addr += 1
         self.state.memory.store(addr_vs, val, endness=self.state.arch.memory_endness)
         self.write_targets.append((addr_vs, val.length//8))

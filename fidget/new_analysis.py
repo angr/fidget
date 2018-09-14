@@ -319,7 +319,7 @@ class OffsetAnalysis(angr.Analysis):
         elif not pointer.symbolic:
             #l.info("...global data!")
             self.global_struct.offsets[pointer.cache_key].add(cur_access)
-            cur_access.source = ValueSource(self.global_struct, state.se.eval(pointer))
+            cur_access.source = ValueSource(self.global_struct, state.solver.eval(pointer))
         else:
             #l.info("...don't got em!")
             if ptr_ty.label is not None and len(ptr_ty.label) > 0:
@@ -341,12 +341,12 @@ class OffsetAnalysis(angr.Analysis):
         jk = state.inspect.exit_jumpkind
         target = state.inspect.exit_target
         if target.symbolic:     # shit lmao
-            all_targets = tuple(state.se.any_n_int(target, 257))
+            all_targets = tuple(state.solver.any_n_int(target, 257))
             if len(all_targets) > 256:
                 import ipdb; ipdb.set_trace()
                 print('shit!! lmao')
         else:
-            all_targets = (state.se.eval(target),)
+            all_targets = (state.solver.eval(target),)
 
         if jk == 'Ijk_Call' or jk.startswith('Ijk_Sys'):
 
@@ -361,7 +361,7 @@ class OffsetAnalysis(angr.Analysis):
                     l.error("SHIT. FUCK. SHIT FUCK.")
 
                 try:
-                    all_targets = (self.syscall_mapping[state.se.any_int(sys_num)][0],)
+                    all_targets = (self.syscall_mapping[state.solver.any_int(sys_num)][0],)
                 except KeyError:
                     # ????????????????????
                     all_targets = (0x1234678d,)
