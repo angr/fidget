@@ -737,10 +737,10 @@ class BinaryData(object):
                 armins = 0
                 for i in range(0, self._inslen, 2):
                     armins <<= 16
-                    armins |= struct.unpack(self._project.arch.struct_fmt(16), string[i:i+2])[0]
+                    armins |= struct.unpack(self._project.arch.struct_fmt(2), string[i:i+2])[0]
                 return armins
             else:
-                return struct.unpack(self._project.arch.struct_fmt(32), string)[0]
+                return struct.unpack(self._project.arch.struct_fmt(4), string)[0]
         else:
             insn = 0
             biter = string if self._project.arch.memory_endness == 'Iend_BE' else reversed(string)
@@ -754,11 +754,11 @@ class BinaryData(object):
             if self._armthumb:
                 armstr = b''
                 for _ in range(0, self._inslen, 2):
-                    armstr = struct.pack(self._project.arch.struct_fmt(16), insn & 0xffff) + armstr
+                    armstr = struct.pack(self._project.arch.struct_fmt(2), insn & 0xffff) + armstr
                     insn >>= 16
                 return armstr
             else:
-                return struct.pack(self._project.arch.struct_fmt(32), insn)
+                return struct.pack(self._project.arch.struct_fmt(4), insn)
         else:
             string = b''
             if self._project.arch.memory_endness == 'Iend_BE':
