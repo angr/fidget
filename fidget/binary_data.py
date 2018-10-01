@@ -26,7 +26,7 @@ def resign_int(n, word_size):
     top = (1 << word_size) - 1
     if n > top:
         return None
-    if n < top/2: # woo int division
+    if n < top//2: # woo int division
         return int(n)
     return int(-((n ^ top) + 1))
 
@@ -71,7 +71,7 @@ class BinaryData(object):
                         increment this value in your next call to this constructor, and that value
                         will be skipped over.
         '''
-        if not isinstance(value, (int, long)) or value < 0:
+        if not isinstance(value, int) or value < 0:
             raise ValueError('value must be an unsigned int or long!')
         self._project = project
         self.unsigned_value = value
@@ -477,6 +477,8 @@ class BinaryData(object):
                                     thoughtval = imm12 & 0xFF
                                     thoughtval |= thoughtval << 8
                                     thoughtval |= thoughtval << 16
+                                else:
+                                    assert False
                             else:
                                 thoughtval = ror(0x80 | (imm12 & 0x7F), imm12 >> 7, 32)
                             if thoughtval != self.value:
@@ -614,7 +616,7 @@ class BinaryData(object):
             for word_size in (64, 32, 16, 8):
                 if word_size > self.bits:
                     continue
-                for bit_offset in xrange(0, insn.length-word_size+1, 8):
+                for bit_offset in range(0, insn.length-word_size+1, 8):
                     result = insn[bit_offset+word_size-1:bit_offset]
                     result = result.sign_extend(self.bits-word_size)
                     if claripy.is_true(result == self.value):
@@ -628,11 +630,11 @@ class BinaryData(object):
                             acc = claripy.Concat(acc, insn[bit_offset-1:0])
 
                         if self._project.arch.memory_endness == 'Iend_LE':
-                            self.patch_bytes_offset = bit_offset/8
+                            self.patch_bytes_offset = bit_offset//8
                         else:
-                            self.patch_bytes_offset = self._inslen - (bit_offset + word_size)/8
+                            self.patch_bytes_offset = self._inslen - (bit_offset + word_size)//8
 
-                        self.patch_bytes_size = word_size/8
+                        self.patch_bytes_size = word_size//8
                         self.patch_bytes_expression = acc
                         self._test_values = (-(1 << word_size) >> 1, ((1 << word_size) >> 1) - 1)
 
@@ -657,11 +659,11 @@ class BinaryData(object):
                         acc = claripy.Concat(acc, insn[bit_offset+1:0])
 
                         if self._project.arch.memory_endness == 'Iend_LE':
-                            self.patch_bytes_offset = bit_offset/8
+                            self.patch_bytes_offset = bit_offset//8
                         else:
-                            self.patch_bytes_offset = self._inslen - (bit_offset + word_size)/8
+                            self.patch_bytes_offset = self._inslen - (bit_offset + word_size)//8
 
-                        self.patch_bytes_size = word_size/8
+                        self.patch_bytes_size = word_size//8
                         self.patch_bytes_expression = acc
                         self._test_values = (-(1 << word_size) >> 1, ((1 << word_size) >> 1) - 4)
                         if self.sanity_check():
@@ -733,39 +735,39 @@ class BinaryData(object):
         if self._arm:
             if self._armthumb:
                 armins = 0
-                for i in xrange(0, self._inslen, 2):
+                for i in range(0, self._inslen, 2):
                     armins <<= 16
-                    armins |= struct.unpack(self._project.arch.struct_fmt(16), string[i:i+2])[0]
+                    armins |= struct.unpack(self._project.arch.struct_fmt(2), string[i:i+2])[0]
                 return armins
             else:
-                return struct.unpack(self._project.arch.struct_fmt(32), string)[0]
+                return struct.unpack(self._project.arch.struct_fmt(4), string)[0]
         else:
             insn = 0
             biter = string if self._project.arch.memory_endness == 'Iend_BE' else reversed(string)
             for c in biter:
                 insn <<= 8
-                insn |= ord(c)
+                insn |= c
             return insn
 
     def _insn_to_string(self, insn):
         if self._arm:
             if self._armthumb:
-                armstr = ''
-                for _ in xrange(0, self._inslen, 2):
-                    armstr = struct.pack(self._project.arch.struct_fmt(16), insn & 0xffff) + armstr
+                armstr = b''
+                for _ in range(0, self._inslen, 2):
+                    armstr = struct.pack(self._project.arch.struct_fmt(2), insn & 0xffff) + armstr
                     insn >>= 16
                 return armstr
             else:
-                return struct.pack(self._project.arch.struct_fmt(32), insn)
+                return struct.pack(self._project.arch.struct_fmt(4), insn)
         else:
-            string = ''
+            string = b''
             if self._project.arch.memory_endness == 'Iend_BE':
-                for _ in xrange(self._inslen):
-                    string = chr(insn & 0xFF) + string
+                for _ in range(self._inslen):
+                    string = bytes([insn & 0xFF]) + string
                     insn >>= 8
             else:
-                for _ in xrange(self._inslen):
-                    string += chr(insn & 0xFF)
+                for _ in range(self._inslen):
+                    string += bytes([insn & 0xFF])
                     insn >>= 8
             return string
 
@@ -774,7 +776,7 @@ class BinaryData(object):
 
 class BinaryDataConglomerate(object):
     def __init__(self, addr, value, symval, access_flags):
-        if not isinstance(value, (int, long)):
+        if not isinstance(value, int):
             raise ValueError("value must be an int or long!")
         self.addr = addr
         self.value = value
@@ -784,7 +786,7 @@ class BinaryDataConglomerate(object):
         self.constraints = []
 
     def add(self, bindata, sym_value):
-        if isinstance(bindata, (int, long)):
+        if isinstance(bindata, int):
             # This represents a value not found and must stay constant
             self.constraints.append(bindata == sym_value)
         else:
@@ -833,7 +835,7 @@ class PendingBinaryData(object):
                         path=list(self.path) + ['con', 'value']
                     )
             except ValueNotFoundError as e:
-                l.debug(e.message)
+                l.debug(e)
                 binary_data = self.value
             out = (self.sym_value, binary_data)
             self.project.bd_cache[self] = out

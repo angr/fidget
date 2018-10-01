@@ -224,7 +224,7 @@ class StructureAnalysis(object):
                         do_not_touch = succ.addr
                         l.debug('Found MIPS entry point stub target %#x', do_not_touch)
 
-        for funcaddr, func in funcman.iteritems():
+        for funcaddr, func in funcman.items():
             # But don't touch _start. Seriously.
             if funcaddr == project.entry:
                 l.debug('Skipping entry point')
@@ -305,7 +305,7 @@ class StructureAnalysis(object):
                     l.warning("\tThis function jumps into another function (%#x). Abort.", addr)
                     raise FidgetAnalysisFailure
                 cache.add(addr)
-                insnbytes = ''.join(self.project.loader.memory.read_bytes(mark.addr, mark.len))
+                insnbytes = self.project.loader.memory.load(mark.addr, mark.len)
                 insnblock = self.project.factory.block(mark.addr, num_inst=1, opt_level=1, thumb=mark.delta == 1, byte_string=insnbytes).vex
                 blockstate.handle_irsb(insnblock)
 
@@ -326,8 +326,8 @@ class StructureAnalysis(object):
             if block.jumpkind == 'Ijk_Call' or block.jumpkind in OK_CONTINUE_JUMPS:
 
                 for context in self.cfg.get_all_nodes(blockstate.block_addr):
-                    for node, jumpkind in self.cfg.get_successors_and_jumpkind( \
-                                            context, \
+                    for node, jumpkind in self.cfg.get_successors_and_jumpkind(
+                                            context,
                                             excluding_fakeret=False):
                         if jumpkind not in OK_CONTINUE_JUMPS:
                             continue

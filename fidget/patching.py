@@ -59,7 +59,7 @@ class Fidget(object):
             fout.write(data)
         fin.close()
         fout.close()
-        os.chmod(tempfile, 0755)
+        os.chmod(tempfile, 0o755)
         shutil.move(tempfile, outfile)
         l.debug('Patching complete!')
 

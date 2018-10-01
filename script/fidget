@@ -43,11 +43,11 @@ def addopt(options, option, argv):
     elif option in ('logfile',):
         options['logfile'] = next(argv)
     else:
-        print 'Bad argument: %s' % option
+        print('Bad argument: %s' % option)
         sys.exit(1)
 
 def usage(verbose):
-    print """Fidget: The Binary Tweaker
+    print("""Fidget: The Binary Tweaker
 
 Usage: fidget [option | filename] [option | filename] ...
 
@@ -67,10 +67,10 @@ Options:
     --cache                    Use a pickled Project and CFG from a file
     -l, --log [tag] [level] Change logging levels
     --logfile [file]        Log output to a file
-    -e, --exit-on-error        Exits at first error instead of trying more files"""
+    -e, --exit-on-error        Exits at first error instead of trying more files""")
 
     if verbose:
-        print """
+        print("""
 Files:
     Each argument that is not part of an option is treated as an input file.
     There must be at least one input file, and if there are multiple inputs,
@@ -127,7 +127,7 @@ Safety:
     all up relative to the stack base, preventing buffer overflows 
     messing with eip, but will be ineffective against overflows that merely 
     modify or leak other stack variables.
-"""
+""")
 
 class CanonColors:
     def __init__(self):
@@ -188,7 +188,7 @@ class PrettyFormatter(logging.Formatter):
         out = ''
         out += CanonColors.time + '[' + self.formatTime(record, '%H:%M:%S') + '] ' + CanonColors.end
         c = CanonColors.name
-        for name, color in CanonColors.colored_names.iteritems():
+        for name, color in CanonColors.colored_names.items():
             if record.name.startswith(name):
                 c = color
                 break
@@ -215,13 +215,13 @@ def main():
             else:
                 options["infiles"].append(arg)
         if len(options['whitelist']) > 0 and len(options['blacklist']) > 0:
-            print 'Cannot use both a whitlist and a blacklist!'
+            print('Cannot use both a whitlist and a blacklist!')
             sys.exit(1)
         if len(options["infiles"]) == 0:
-            print 'You must specify a file to operate on!'
+            print('You must specify a file to operate on!')
             sys.exit(1)
         if len(options["outfiles"]) > len(options["infiles"]):
-            print 'More output files specified than input files!'
+            print('More output files specified than input files!')
             sys.exit(1)
 
         formatter = PrettyFormatter()

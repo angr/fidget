@@ -14,7 +14,7 @@ def equals(item1, item2):
     if not isinstance(item1, IRSB) or not isinstance(item2, IRSB):
         yield (True, False)
         return
-    queue = zip(item1.statements, item2.statements)
+    queue = list(zip(item1.statements, item2.statements))
 
     while len(queue) > 0:
         a, b = queue.pop()
