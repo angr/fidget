@@ -53,7 +53,7 @@ def generic_ctf_test(binary, tester, always, winner):
 
     fidgetress = Fidget(binary)
     fidgetress.patch(stacks={'technique': FidgetDefaultTechnique(), 'blacklist': ['_init']})
-    nose.tools.assert_not_equals(len(fidgetress.dump_patches()), 0)
+    nose.tools.assert_not_equal(len(fidgetress.dump_patches()), 0)
     fidgetress.apply_patches(patched_binary)
 
     process = boot(patched_binary)
@@ -75,7 +75,7 @@ def generic_test(binary, expected):
 
     fidgetress = Fidget(binary)
     fidgetress.patch(stacks={'technique': FidgetDefaultTechnique(), 'blacklist': ['_init']})
-    nose.tools.assert_not_equals(len(fidgetress.dump_patches()), 0)
+    nose.tools.assert_not_equal(len(fidgetress.dump_patches()), 0)
     fidgetress.apply_patches(patched_binary)
 
     process = boot(patched_binary)
