@@ -1,5 +1,5 @@
 import claripy
-from angr.engines.vex import operations
+from angr.engines.vex.claripy.irop import operations
 from angr.errors import SimOperationError
 from angr import SimState
 from angr import sim_options
