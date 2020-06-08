@@ -4,6 +4,7 @@ from angr.errors import SimOperationError
 from angr import SimState
 from angr import sim_options
 
+from .memory import SpecialFillerRegionedMemory
 from .binary_data import PendingBinaryData
 from .errors import FidgetUnsupportedError, FidgetAnalysisFailure
 from . import vexutils
@@ -96,7 +97,10 @@ class BlockState(object):
             self.state = SimState(arch=project.arch,
                     mode='symbolic',
                     special_memory_filler=lambda name, bits, _state: BiHead(claripy.BVV(0, bits), claripy.BVV(0, bits)),
-                    add_options={sim_options.ABSTRACT_MEMORY, sim_options.SPECIAL_MEMORY_FILL}
+                    add_options={sim_options.ABSTRACT_MEMORY, sim_options.SPECIAL_MEMORY_FILL},
+                    remove_options={sim_options.FAST_MEMORY},
+                    plugin_preset="fidget_plugins",
+                    regioned_memory_cls=SpecialFillerRegionedMemory,
                 )
             self.state.scratch.ins_addr = 0
             if project.arch.name.startswith('ARM'):
