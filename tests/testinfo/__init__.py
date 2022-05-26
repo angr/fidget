@@ -1,8 +1,10 @@
-import os, time
+import os
 import subprocess
-import nose
-from fidget import Fidget, FidgetDefaultTechnique
+import time
+
 import shellphish_qemu
+
+from fidget import Fidget, FidgetDefaultTechnique
 
 CTF_WINNER = b'Haha totally pwned'
 ARRAYS_OUTPUT = b'ABCDEFGHIJKLMNOPQRSTUVWXYZ\n'
@@ -46,14 +48,14 @@ def generic_ctf_test(binary, tester, always, winner):
     #finally:
     #    process.kill()
 
-    #nose.tools.assert_in(always, testdata)
-    #nose.tools.assert_in(winner, testdata)
+    #assert always in testdata
+    #assert winner in testdata
 
     patched_binary = binary + '.out'
 
     fidgetress = Fidget(binary)
     fidgetress.patch(stacks={'technique': FidgetDefaultTechnique(), 'blacklist': ['_init']})
-    nose.tools.assert_not_equal(len(fidgetress.dump_patches()), 0)
+    assert len(fidgetress.dump_patches()) != 0
     fidgetress.apply_patches(patched_binary)
 
     process = boot(patched_binary)
@@ -63,25 +65,25 @@ def generic_ctf_test(binary, tester, always, winner):
         process.kill()
     os.unlink(patched_binary)
 
-    nose.tools.assert_in(always, testdata)
-    nose.tools.assert_not_in(winner, testdata)
+    assert always in testdata
+    assert winner not in testdata
 
 def generic_test(binary, expected):
     patched_binary = binary + '.out'
 
     process = boot(binary)
     output = process.output()
-    nose.tools.assert_in(expected, output)
+    assert expected in output
 
     fidgetress = Fidget(binary)
     fidgetress.patch(stacks={'technique': FidgetDefaultTechnique(), 'blacklist': ['_init']})
-    nose.tools.assert_not_equal(len(fidgetress.dump_patches()), 0)
+    assert len(fidgetress.dump_patches()) != 0
     fidgetress.apply_patches(patched_binary)
 
     process = boot(patched_binary)
     output = process.output()
     os.unlink(patched_binary)
-    nose.tools.assert_in(expected, output)
+    assert expected in output
 
 
 def boot(binary):
@@ -162,7 +164,6 @@ class Process:
         kwargs = {'cwd': mydir}
         if not asynchronous:
             kwargs['stdout'] = subprocess.PIPE
-        #print command
         self.process = subprocess.Popen(command, **kwargs)
         if asynchronous:
             time.sleep(0.5)
