@@ -1,6 +1,4 @@
-#!/usr/bin/python
-
-from distutils.core import setup
+from setuptools import setup
 
 setup(name='Fidget',
       version='1.0',
@@ -8,5 +6,10 @@ setup(name='Fidget',
       author='rhelmot',
       packages=['fidget'],
       scripts=['script/fidget'],
-      install_requires=[i.strip() for i in open('requirements.txt').readlines() if 'git' not in i]
+      install_requires=[
+          "angr",
+          "ipdb",
+          "shellphish-qemu",
+          "nclib",
+      ]
 )
